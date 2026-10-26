@@ -7,6 +7,7 @@
 #   dist\ProjectOogie-<date>.zip
 # No game files: the program copies them from the player's disc image on the first start.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\package_release.ps1
+param([string]$Version = "")   # e.g. v0.1: the zip's name
 $Root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $Root "dist\ProjectOogie"
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
@@ -23,7 +24,8 @@ PROJECT OOGIE - The Nightmare Before Christmas: Oogie's Revenge for Windows
 (an unofficial port of the original Xbox game; not affiliated with Capcom or Disney)
 
 YOU NEED YOUR OWN COPY OF THE GAME: the Xbox version, USA, as a disc image (.iso).
-No game files are included.
+The program contains the game's code translated to native code; the game's art,
+sound, films and levels are not included, they come from your disc.
 
 FIRST START
   Run "Project Oogie.exe". It asks for your disc image, checks it is the supported
@@ -38,8 +40,9 @@ PLAYING
   Keyboard: arrow keys = A B X Y (Down A, Right B, Left X, Up Y), Enter = Start,
             W A S D = walk, I J K L = camera, Backspace = Back (map),
             T F G H = D-pad, 1 / 3 = triggers, Q / E = White / Black.
-  Xbox, PlayStation 4/5 and Switch Pro controllers work; every key and button can
-  be changed in the settings.
+  Xbox controllers and the PlayStation 5 DualSense are tested; other pads SDL2
+  supports (PlayStation 4 and more) should work. Every key and button can be
+  changed in the settings.
 
 FILES
   saves\         your saves (backed up to saves_backup\ at every start, ten kept)
@@ -47,7 +50,7 @@ FILES
   mods\          mods and texture packs (F1 > Mods explains)
   logs\play.log  the last session's log; please attach it when reporting a problem
 "@ | Set-Content (Join-Path $out "README.txt") -Encoding ascii
-$zip = Join-Path $Root ("dist\ProjectOogie-" + (Get-Date -Format "yyyyMMdd") + ".zip")
+$zip = Join-Path $Root ("dist\ProjectOogie-" + $(if ($Version) { $Version } else { Get-Date -Format "yyyyMMdd" }) + ".zip")
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $out -DestinationPath $zip
 $files = Get-ChildItem $out -Recurse -File
