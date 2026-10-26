@@ -1,0 +1,9 @@
+    /* Project Oogie: one line and an fflush per disc read held the game
+     * thread whenever the log file was slow ([STALL] st3: game thread in
+     * fprintf from bridge_NtReadFile for 200+ ms; films read 16 KB at a
+     * time). Off unless OOGIE_READ_LOG=1. */
+    static int read_log = -1;
+    if (read_log < 0) { const char *e = getenv("OOGIE_READ_LOG"); read_log = e && *e == '1'; }
+    if (read_log) {
+        const uint8_t *p = (const uint8_t *)XBOX_TO_NATIVE(buffer_va);
+        uint32_t got = (uint32_t)ios.Information;

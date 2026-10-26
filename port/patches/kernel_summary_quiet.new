@@ -1,0 +1,6 @@
+        /* Oogie patch (port/patches/kernel_summary_quiet): the two-second
+         * call summary off under OOGIE_QUIET_GPU=1 (play.bat), as the other
+         * periodic GPU-thread logging. */
+        static int quiet = -1;
+        if (quiet < 0) { const char *q = getenv("OOGIE_QUIET_GPU"); quiet = q && *q && *q != '0'; }
+        if (!quiet && now - last_summary_tick >= 2000 && g_kernel_call_count > 200) {

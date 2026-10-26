@@ -1,0 +1,61 @@
+# Copyrighted game data: never commit
+game/
+*.xbe
+*.iso
+*.xiso
+run/
+# Generated / derived from the XBE
+port/src/recomp/gen/
+build_out/
+port/build*/
+*.bmp
+logs/run*.log
+logs/live/
+xbox_kernel.log
+# Audio recordings (RECOMP_AUDIO_WAV, game audio)
+logs/*.wav
+# Bink decoder captures (64 MB guest RAM dumps) and tools/binkdiff output
+logs/bink_*.bin
+logs/binkdiff_*
+tools/binkdiff/build/
+# Third-party texture packs (redistribution not cleared)
+optional_assets/
+bin/
+third_party/
+*.exe
+# Third-party walkthrough supplied by the owner (copyrighted): local reference only
+docs/reference/
+# Player saves (play.bat RECOMP_SAVE_DIR) and test videos
+saves/
+logs/*.mp4
+saves_test/
+settings.ini
+saves_ownercopy/
+saves_backup/
+saves_ownercopy_now/
+reports/
+mods/
+screenshots/
+texture_dump/
+# Test and session logs (hundreds of MB; kept on the developer's PC)
+logs/
+xbox_kernel.log
+# Old transfer and backup folder from the move to C:\ProjectOogie
+_transfer/
+# Compiled leftovers and debug symbols
+*.obj
+*.pdb
+# Release packaging output (scripts/package_release.ps1)
+dist/
+
+trailer/
+# Not part of the public repository (2026-10-25): the Reddit trailer and its
+# tooling, private working notes and instructions
+record_trailer_gameplay.bat
+scripts/trailer_*.ps1
+docs/TRAILER.md
+CLAUDE.md
+docs/PROJECT_INSTRUCTIONS.md
+docs/SETUP_CLAUDE_CODE.md
+docs/NOTES_FOR_OTHER_PORT.md
+docs/owner_stuck_charge_sheet.png

@@ -1,0 +1,3 @@
+            o[k].v = textured ? uv[k][1] : 0.0f;
+        }
+        s_bcount += 3;

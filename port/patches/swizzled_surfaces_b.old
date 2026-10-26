@@ -1,0 +1,7 @@
+static void draw_primitive(void)
+{
+    float v[4];
+    uint32_t i;
+
+    if (!s_gpu.prim || !s_gpu.idx_count)
+        return;

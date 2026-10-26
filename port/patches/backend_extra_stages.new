@@ -1,0 +1,48 @@
+/* Oogie patch (port/patches/backend_extra_stages): let a back end see
+ * texture stages 1-3 and the register-combiner stage count of the batch being
+ * drawn. The interface passes stage 0 only; Oogie's Bink movies need three
+ * planes (Y on stage 0, two half-size chroma planes on stages 1 and 2, mixed
+ * by a 7-stage combiner), and the D3D11 back end reproduces that pattern.
+ * Returns 1 and fills *out when the stage is enabled and valid. Call only
+ * from inside the back end's draw (the executor's thread). */
+int oogie_backend_stage_texture(int stage, Nv2aTexture *out)
+{
+    const Texture *t;
+    if (stage < 0 || stage > 3)
+        return 0;
+    t = &s_gpu.texs[stage];
+    if (!t->valid)
+        return 0;
+    if (s_gpu.rc_seen && !((s_gpu.rc.stage_program >> (stage * 5)) & 0x1Fu))
+        return 0;
+    out->offset = t->offset;
+    out->width = t->width;
+    out->height = t->height;
+    out->pitch = t->pitch;
+    out->color = t->color;
+    out->addr_u = t->addr_u;
+    out->addr_v = t->addr_v;
+    out->levels = t->levels;
+    out->filter = t->filter;
+    return 1;
+}
+
+int oogie_backend_combiner_stages(void)
+{
+    return s_gpu.rc_seen ? (int)(s_gpu.rc.control & 0xFFu) : 0;
+}
+
+/* The whole combiner program and the fog colour (r, g, b) for the batch being
+ * drawn. Returns rc_seen: 0 means the title has not programmed the combiners
+ * yet and "texel * diffuse" stands in, as in the executor. */
+int oogie_backend_combiner(Nv2aCombiner *out, float fog_rgb[3])
+{
+    float f[4];
+    *out = s_gpu.rc;
+    nv2a_rc_unpack(s_gpu.fog_color, f);      /* FOG_COLOR is R in bits 0-7 */
+    fog_rgb[0] = f[2]; fog_rgb[1] = f[1]; fog_rgb[2] = f[0];
+    return s_gpu.rc_seen;
+}
+
+int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out)
+{

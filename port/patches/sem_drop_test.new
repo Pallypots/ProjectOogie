@@ -1,0 +1,14 @@
+    if (subch == 0 && method == 0x1D70 && s_sem_va) {
+        /* Project Oogie test switch (KNOWN_ISSUES #54): OOGIE_TEST_DROP_SEM=N
+         * drops every semaphore release from the Nth on, the suspected cause of the fence
+         * freeze, to prove the stall sampler's unstick. Never set in play. */
+        static int drop = -1;
+        static unsigned n_rel;
+        if (drop < 0) { const char *e = getenv("OOGIE_TEST_DROP_SEM"); drop = e ? atoi(e) : 0; }
+        if (drop > 0 && ++n_rel >= (unsigned)drop) {          /* every one from the Nth */
+            if (n_rel < (unsigned)drop + 3) fprintf(stderr, "[TEST] dropped semaphore release #%u (value %08X)\n", n_rel, param);
+            return;
+        }
+    }
+    if (subch == 0 && method == 0x1D70 && s_sem_va) {
+        uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();

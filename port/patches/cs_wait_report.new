@@ -1,0 +1,34 @@
+    {
+        /* Project Oogie (KNOWN_ISSUES #55): half-second freezes with the game
+         * thread waiting here. A wait of 100 ms names the holder: its thread,
+         * where it took the lock, and its call stack (port/src/pc_stall.c).
+         * At most 40 reports. */
+        extern void pc_stall_print_thread(unsigned long tid, const char *what);
+        static volatile LONG reports;
+        DWORD t0 = GetTickCount();
+        int shown = 0, spins = 0;
+        while (!TryEnterCriticalSection(cs)) {
+            if (!shown && GetTickCount() - t0 >= 100) {
+                XBOX_CS_SLOT* slot = xbox_cs_slot_of(cs);
+                shown = 1;
+                if (InterlockedIncrement(&reports) <= 40) {
+                    fprintf(stderr, "[CS] thread %lu waited 100 ms for guest lock 0x%08X: holder thread %lu took it at guest 0x%08X\n",
+                            GetCurrentThreadId(),
+                            (uint32_t)((uintptr_t)CriticalSection - (uintptr_t)g_xbox_mem_offset),
+                            slot ? slot->owner_tid : 0ul, slot ? slot->owner_site : 0u);
+                    if (slot && slot->owner_tid)
+                        pc_stall_print_thread(slot->owner_tid, " (lock holder)");
+                    fflush(stderr);
+                } else {
+                    shown = 2;
+                }
+            }
+            if (++spins < 64) SwitchToThread(); else Sleep(1);
+        }
+        if (shown == 1)
+            fprintf(stderr, "[CS] thread %lu got guest lock 0x%08X after %lu ms\n", GetCurrentThreadId(),
+                    (uint32_t)((uintptr_t)CriticalSection - (uintptr_t)g_xbox_mem_offset),
+                    (unsigned long)(GetTickCount() - t0));
+    }
+    xbox_cs_note_owner(cs);
+    if (g_cs_contention_reports <= 16) {

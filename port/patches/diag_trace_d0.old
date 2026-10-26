@@ -1,0 +1,5 @@
+            if ((s_gpu.xf_mode & 3) == 2 && s_xf)
+                fprintf(stderr, "[FTRACE]     v0 %g %g %g %g  v1 %g %g  v2 %g %g%c",
+                        s_xf[0].pos[0], s_xf[0].pos[1], s_xf[0].pos[2],
+                        s_xf[0].pos[3], s_xf[1].pos[0], s_xf[1].pos[1],
+                        s_xf[2].pos[0], s_xf[2].pos[1], 10);

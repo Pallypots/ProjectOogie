@@ -1,0 +1,3 @@
+static void note(uint32_t subch, uint32_t method)
+{
+    uint16_t *slot = &s_seen_slot[subch & 7][(method & 0x1FFC) / 4];

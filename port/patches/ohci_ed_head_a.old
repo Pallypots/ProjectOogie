@@ -1,0 +1,1 @@
+        uint32_t head = rd32(ed + 8);

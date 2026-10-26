@@ -1,0 +1,2 @@
+            for (uint32_t i = 0; i < count && va < end_va
+                                 && (va & 0x0FFFFFFFu) + 4u <= PB_RAM_BYTES; i++) {

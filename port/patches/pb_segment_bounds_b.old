@@ -1,0 +1,1 @@
+            for (uint32_t i = 0; i < count && va < end_va; i++) {

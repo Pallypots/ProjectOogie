@@ -1,0 +1,2 @@
+    if (getenv("RECOMP_PB_EXEC_VERBOSE")) {
+        static int shown;

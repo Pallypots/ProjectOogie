@@ -1,0 +1,17 @@
+    /* Oogie (KNOWN_ISSUES #43): DirectSound builds this table once, at
+     * start-up (sub_0020D53D, called only from its init paths). In four
+     * crash logs it later read page 0x73C000 instead of 0x738000 during a
+     * level load, and every one crashed soon after: this helper clears a
+     * dword at page + 0x810 whenever it is non-zero, so it was writing
+     * into memory that is not the GP scratch. Keep the first page; report
+     * a change once and never follow it. */
+    if (s_dsp_ack_auto_page && page != s_dsp_ack_auto_page) {
+        static int told;
+        if (!told++)
+            fprintf(stderr, "[APU] DSP doorbell: GP scratch SGE table 0x%08X now names"
+                            " page 0x%08X; keeping 0x%08X (table overwritten?)\n",
+                    sge, page, s_dsp_ack_auto_page);
+        page = s_dsp_ack_auto_page;
+    }
+    if (page != s_dsp_ack_auto_page) {
+        s_dsp_ack_auto_page = page;

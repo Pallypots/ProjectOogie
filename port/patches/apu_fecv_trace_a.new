@@ -1,0 +1,3 @@
+        d->regs[NV_PAPU_FECV] = argument;
+        /* Oogie (KNOWN_ISSUES #48): which host thread selected the voice. */
+        oogie_fecv_tid = oogie_tid();

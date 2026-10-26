@@ -1,0 +1,1 @@
+        d->regs[NV_PAPU_FECV] = argument;

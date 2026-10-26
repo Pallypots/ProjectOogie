@@ -1,0 +1,3 @@
+extern void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param);
+uint32_t g_oogie_pb_va;      /* Project Oogie #66: the method being executed, and whether in a CALL */
+int g_oogie_pb_in_call;

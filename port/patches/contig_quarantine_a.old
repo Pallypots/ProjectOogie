@@ -1,0 +1,2 @@
+static void contig_take(uint32_t first, uint32_t n)
+{

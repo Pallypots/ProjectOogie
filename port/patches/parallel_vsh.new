@@ -1,0 +1,83 @@
+/* Oogie patch (port/patches/parallel_vsh): run a large batch's vertex
+ * programs on several threads. tools/sampler, Town Square with the D3D11 back
+ * end: 58% of the GPU thread in nv2a_vsh_run while the game thread waited for
+ * it. Vertices are independent; nv2a_vsh_run keeps its registers in locals and
+ * only reads the program and constants, which do not change during a batch,
+ * and transform_vertex only reads guest memory and executor state. Only
+ * vertex-program batches of 128+ vertices are split (the fixed-function path
+ * has caches of its own). OOGIE_XF_THREADS=<n> sets the helpers (default:
+ * cores - 2, at most 6); 0 turns it off. */
+#include <windows.h>
+#define XF_MAX_HELPERS 6
+static int s_xfp_n = -1;                    /* helper threads */
+static HANDLE s_xfp_go[XF_MAX_HELPERS], s_xfp_done[XF_MAX_HELPERS];
+static volatile uint32_t s_xfp_count;
+static volatile LONG s_xfp_fail;
+
+static int transform_vertex(uint32_t index, Nv2aVshOutput *out);
+
+static void xfp_range(int part, int parts)
+{
+    uint32_t n = s_xfp_count, per = (n + (uint32_t)parts - 1) / (uint32_t)parts;
+    uint32_t b = per * (uint32_t)part, e = b + per, i;
+    if (e > n) e = n;
+    for (i = b; i < e; i++)
+        if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
+            InterlockedExchange(&s_xfp_fail, 1);
+}
+
+static DWORD WINAPI xfp_worker(LPVOID p)
+{
+    int k = (int)(intptr_t)p;
+    for (;;) {
+        WaitForSingleObject(s_xfp_go[k], INFINITE);
+        xfp_range(k + 1, s_xfp_n + 1);
+        SetEvent(s_xfp_done[k]);
+    }
+    return 0;
+}
+
+static void xfp_init(void)
+{
+    const char *e = getenv("OOGIE_XF_THREADS");
+    SYSTEM_INFO si;
+    int k;
+    GetSystemInfo(&si);
+    s_xfp_n = e ? atoi(e) : (int)si.dwNumberOfProcessors - 2;
+    if (s_xfp_n > XF_MAX_HELPERS) s_xfp_n = XF_MAX_HELPERS;
+    if (s_xfp_n < 0) s_xfp_n = 0;
+    for (k = 0; k < s_xfp_n; k++) {
+        HANDLE t;
+        s_xfp_go[k] = CreateEventA(NULL, FALSE, FALSE, NULL);
+        s_xfp_done[k] = CreateEventA(NULL, FALSE, FALSE, NULL);
+        t = CreateThread(NULL, 0, xfp_worker, (LPVOID)(intptr_t)k, 0, NULL);
+        if (!t || !s_xfp_go[k] || !s_xfp_done[k]) { s_xfp_n = k; break; }
+        CloseHandle(t);
+    }
+    fprintf(stderr, "  [GPU] vertex programs on %d helper thread(s)\n", s_xfp_n);
+    fflush(stderr);
+}
+
+static void raster_batch_program(void)
+{
+    uint32_t i, n = s_gpu.idx_count;
+
+    if (!s_xf && !(s_xf = (Nv2aVshOutput *)calloc(NV_MAX_INDICES, sizeof *s_xf)))
+        return;
+    if (s_xfp_n < 0)
+        xfp_init();
+    if (s_xfp_n > 0 && n >= 128 && batch_uses_program()) {
+        int k;
+        s_xfp_count = n;
+        s_xfp_fail = 0;
+        for (k = 0; k < s_xfp_n; k++)
+            SetEvent(s_xfp_go[k]);
+        xfp_range(0, s_xfp_n + 1);
+        WaitForMultipleObjects((DWORD)s_xfp_n, s_xfp_done, TRUE, INFINITE);
+        if (s_xfp_fail)
+            return;                                    /* no program loaded */
+    } else {
+        for (i = 0; i < n; i++)
+            if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
+                return;                                /* no program loaded */
+    }

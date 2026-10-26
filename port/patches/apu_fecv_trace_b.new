@@ -1,0 +1,17 @@
+                       NV_PAVS_VOICE_TAR_VOLA, 0xFFFFFFFF, argument);
+        /* Oogie (KNOWN_ISSUES #48): RECOMP_APU_BINS=1 reports a volume write
+         * from a thread other than the one that selected the voice, and
+         * every VOLA write to voice 75 (the Town Square music). */
+        {
+            static int on = -1;
+            static unsigned cross, lines;
+            unsigned t = oogie_tid();
+            if (on < 0) { const char *e = getenv("RECOMP_APU_BINS"); on = e && *e && *e != '0'; }
+            if (on) {
+                if (t != oogie_fecv_tid && ++cross <= 200)
+                    fprintf(stderr, "[APU-XTHREAD] VOLA %08X to voice %u by tid %u, selected by tid %u (%u so far)\n",
+                            argument, (unsigned)d->regs[NV_PAPU_FECV], t, oogie_fecv_tid, cross);
+                if ((d->regs[NV_PAPU_FECV] & 0xFFFF) == 75 && ++lines <= 400)
+                    fprintf(stderr, "[APU-V75] VOLA %08X tid %u\n", argument, t);
+            }
+        }

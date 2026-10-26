@@ -1,0 +1,42 @@
+/* Project Oogie (KNOWN_ISSUES #66): where D3D's command ring starts (the
+ * target of the first wrap-around jump), 0 until known.
+ * D3D jumps into its ring only to wrap to the start; a recorded command
+ * buffer it runs lives outside the ring. Every bad flow seen in the owner's
+ * logs went into the ring elsewhere or below it (a CALL to 0x4 read from a
+ * parameter of 6 in the figure viewer, jumps to 0x11100 and 0xDA24), and the
+ * walk then ran stale commands: old semaphore releases (the semaphore went
+ * back 88 times) and random state (flicker). Such a target is now a bad
+ * target like one outside RAM: the walk drops to PUT. OOGIE_PB_RING_CHECK=0
+ * turns it off. */
+static uint32_t s_ring_base;
+#define PB_RING_BYTES 0x100000u
+
+static int pb_ring_target_bad(uint32_t w, uint32_t at, uint32_t target)
+{
+    static int on = -1;
+    /* Off by default (2026-10-20, ts/tb/sy runs): CALLs below the ring
+     * (0x300, 0x4) are not always junk; refusing them dropped real commands
+     * and lost fences (15 s stalls in 7 of 9 runs). OOGIE_PB_RING_CHECK=1. */
+    if (on < 0) { const char *e = getenv("OOGIE_PB_RING_CHECK"); on = e && *e == '1'; }
+    if (!on)
+        return 0;
+    if (!s_ring_base) {
+        /* Learned from the first wrap: a JUMP back to a lower address, at
+         * boot, long before anything has gone wrong. */
+        if ((w & 3u) == 1u && target < at && target >= 0x1000u) {
+            s_ring_base = target;
+            fprintf(stderr, "  [PB] command ring starts at 0x%08X (first wrap, from 0x%08X); jumps into it elsewhere are bad targets\n", target, at);
+        }
+        return 0;
+    }
+    if (target == s_ring_base)
+        return 0;
+    return target < s_ring_base + PB_RING_BYTES;
+}
+
+static int pb_bad_target(uint32_t w, uint32_t at, uint32_t target, uint32_t put)
+{
+    static unsigned total;
+    unsigned k;
+    if (target < PB_RAM_BYTES && !pb_ring_target_bad(w, at, target))
+        return 0;

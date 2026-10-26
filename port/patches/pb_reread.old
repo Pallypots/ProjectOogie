@@ -1,0 +1,4 @@
+static int pb_bad_target(uint32_t w, uint32_t at, uint32_t target, uint32_t put)
+{
+    static unsigned total;
+    unsigned k;

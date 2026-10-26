@@ -1,0 +1,2 @@
+    for (a = 0; a < NV2A_VSH_INPUTS; a++)
+        fetch_attr(&s_gpu.attr[a], index, in[a]);   /* absent: 0,0,0,1 */

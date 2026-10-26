@@ -1,0 +1,43 @@
+    /* Project Oogie (KNOWN_ISSUES #66): SET_SEMAPHORE_OFFSET says which word
+     * the next release writes. Every release went to D3D's fence word
+     * (s_sem_va) whatever the offset, and the fence word went backwards
+     * (0xAE9 -> 0x96B, rt3) during runs with only forward ring steps. The
+     * offset of the first release is taken as D3D's own; a release aimed at
+     * another offset goes to that word in the contiguous window instead, or is
+     * dropped if it is not inside it. OOGIE_SEM_OFFSET_OLD=1: the old way. */
+    if (subch == 0 && method == 0x1D6C) {
+        s_oogie_sem_off = param;
+        s_oogie_sem_off_set = 1;
+    }
+    if (subch == 0 && method == 0x1D70) {
+        /* #66: a release that sets the fence word back: where it came from. */
+        extern uint32_t g_oogie_pb_va;
+        extern int g_oogie_pb_in_call;
+        static uint32_t last_rel;
+        static unsigned n_back;
+        if (last_rel > 0x100u && (int32_t)(param - last_rel) < -4 && n_back++ < 30)
+            fprintf(stderr, "  [NV2A] release %08X after %08X: method at 0x%08X (%s)\n",
+                    param, last_rel, g_oogie_pb_va, g_oogie_pb_in_call == 2 ? "carried over" : g_oogie_pb_in_call ? "inside a CALL" : "ring");
+        last_rel = param;
+    }
+    if (subch == 0 && method == 0x1D70 && s_sem_va && s_oogie_sem_off_set) {
+        static int old_way = -1;
+        static uint32_t main_off;
+        static int have_main;
+        static unsigned n_other;
+        if (old_way < 0) { const char *e = getenv("OOGIE_SEM_OFFSET_OLD"); old_way = e && *e == '1'; }
+        if (!have_main) { main_off = s_oogie_sem_off; have_main = 1;
+            fprintf(stderr, "  [NV2A] D3D's semaphore offset 0x%08X (fence word 0x%08X)\n", main_off, s_sem_va); }
+        if (!old_way && s_oogie_sem_off != main_off) {
+            uint32_t va = 0x80000000u | (s_oogie_sem_off & 0x0FFFFFFCu);
+            int ok = (s_oogie_sem_off & 0xF0000000u) == 0 && s_oogie_sem_off + 4u <= 0x04000000u;
+            if (n_other++ < 20)
+                fprintf(stderr, "  [NV2A] semaphore release 0x%08X aimed at offset 0x%08X (not D3D's 0x%08X): %s\n",
+                        param, s_oogie_sem_off, main_off, ok ? "written there" : "dropped");
+            if (ok)
+                *(volatile uint32_t *)((uint8_t *)xbox_GetMemoryOffset() + va) = param;
+            return;
+        }
+    }
+    if (subch == 0 && method == 0x1D70 && s_sem_va) {
+        uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();

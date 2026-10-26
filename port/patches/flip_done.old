@@ -1,0 +1,2 @@
+    case NV097_FLIP_INCREMENT_WRITE:
+        s_gpu.flip_write = s_gpu.flip_modulo

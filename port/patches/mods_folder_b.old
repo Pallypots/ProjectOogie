@@ -1,0 +1,3 @@
+        } else {
+            swprintf_s(host_path_buf, buf_size, L"%s\\%s", base_dir, remainder_wide);
+        }

@@ -1,0 +1,112 @@
+static void xbox_remember_host_path(const wchar_t *p)
+{
+    if (p) wcsncpy_s(s_last_host_path_shared, MAX_PATH, p, _TRUNCATE);
+}
+
+/* Project Oogie: mods (dev cycle 4). Next to the game folder, mods\<name>\files
+ * holds replacement disc files under their disc paths (mods\HD Movies\files\
+ * Movie\mv_04.bik replaces game\Movie\mv_04.bik). A mod with a file named
+ * "disabled" in its folder is off. When several mods have the same file, the
+ * one whose name sorts first wins. The list is read once, at the first disc
+ * file the game opens. OOGIE_NO_MODS=1 turns mods off. */
+#define OOGIE_MODS_MAX 32
+static WCHAR s_mods[OOGIE_MODS_MAX][MAX_PATH];
+static int s_mods_n;
+static volatile LONG s_mods_state;          /* 0 not read, 1 reading, 2 ready */
+
+static void oogie_mods_init(void)
+{
+    WCHAR root[MAX_PATH], pat[MAX_PATH], *p;
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    const char *off = getenv("OOGIE_NO_MODS");
+    s_mods_n = 0;
+    if (off && *off == '1') return;
+    /* the game folder may be relative ("game"): its parent from the full path */
+    if (!GetFullPathNameW(s_game_dir, MAX_PATH, root, NULL))
+        wcscpy_s(root, MAX_PATH, s_game_dir);
+    p = wcsrchr(root, L'\\');
+    if (p) *p = L'\0';
+    swprintf_s(pat, MAX_PATH, L"%s\\mods\\*", root);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "  [MODS] no mods folder (%S\\mods)\n", root);
+        fflush(stderr);
+        return;
+    }
+    do {
+        WCHAR dir[MAX_PATH], chk[MAX_PATH];
+        DWORD a;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+            continue;
+        swprintf_s(dir, MAX_PATH, L"%s\\mods\\%s", root, fd.cFileName);
+        swprintf_s(chk, MAX_PATH, L"%s\\disabled", dir);
+        if (GetFileAttributesW(chk) != INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "  [MODS] %S: off (has a file named disabled)\n", fd.cFileName);
+            continue;
+        }
+        swprintf_s(chk, MAX_PATH, L"%s\\files", dir);
+        a = GetFileAttributesW(chk);
+        if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+            fprintf(stderr, "  [MODS] %S: no files folder, ignored\n", fd.cFileName);
+            continue;
+        }
+        if (s_mods_n < OOGIE_MODS_MAX) {
+            wcscpy_s(s_mods[s_mods_n++], MAX_PATH, chk);
+            fprintf(stderr, "  [MODS] %S: on\n", fd.cFileName);
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    {
+        /* name order, whatever order the file system listed them in */
+        int i, j;
+        for (i = 1; i < s_mods_n; i++)
+            for (j = i; j > 0 && _wcsicmp(s_mods[j - 1], s_mods[j]) > 0; j--) {
+                WCHAR t[MAX_PATH];
+                wcscpy_s(t, MAX_PATH, s_mods[j]);
+                wcscpy_s(s_mods[j], MAX_PATH, s_mods[j - 1]);
+                wcscpy_s(s_mods[j - 1], MAX_PATH, t);
+            }
+    }
+    fflush(stderr);
+}
+
+/* The list is read under a lock, so the settings menu can have it read again
+ * (oogie_mods_rescan) while the game opens files. */
+static SRWLOCK s_mods_lock = SRWLOCK_INIT;
+
+/* The settings menu (Mods page) switched a mod on or off: read the list again
+ * before the next disc file is opened. */
+void oogie_mods_rescan(void)
+{
+    AcquireSRWLockExclusive(&s_mods_lock);
+    InterlockedExchange(&s_mods_state, 0);
+    ReleaseSRWLockExclusive(&s_mods_lock);
+}
+
+/* A mod's copy of the disc file `rel` (path under the game folder), if any. */
+static int oogie_mod_file(const WCHAR *rel, WCHAR *out, DWORD out_n)
+{
+    int i, found = 0;
+    if (s_mods_state != 2) {
+        AcquireSRWLockExclusive(&s_mods_lock);
+        if (s_mods_state != 2) {
+            oogie_mods_init();
+            InterlockedExchange(&s_mods_state, 2);
+        }
+        ReleaseSRWLockExclusive(&s_mods_lock);
+    }
+    AcquireSRWLockShared(&s_mods_lock);
+    for (i = 0; i < s_mods_n && !found; i++) {
+        WCHAR cand[MAX_PATH];
+        DWORD a;
+        swprintf_s(cand, MAX_PATH, L"%s\\%s", s_mods[i], rel);
+        a = GetFileAttributesW(cand);
+        if (a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY)) {
+            wcscpy_s(out, out_n, cand);
+            found = 1;
+        }
+    }
+    ReleaseSRWLockShared(&s_mods_lock);
+    return found;
+}

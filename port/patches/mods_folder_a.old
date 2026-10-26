@@ -1,0 +1,4 @@
+static void xbox_remember_host_path(const wchar_t *p)
+{
+    if (p) wcsncpy_s(s_last_host_path_shared, MAX_PATH, p, _TRUNCATE);
+}

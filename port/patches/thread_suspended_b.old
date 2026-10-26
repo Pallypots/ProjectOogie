@@ -1,0 +1,4 @@
+static HANDLE bridge_spawn_thread(recomp_func_t fn, uint32_t ctx1,
+                                  uint32_t ctx2, uint32_t stack_top,
+                                  uint32_t obj_va, uint32_t tls_size)
+{

@@ -1,0 +1,8 @@
+        /* Oogie patch (port/patches/quiet_gpu_trace): OOGIE_QUIET_GPU=1 keeps
+         * RECOMP_PB_EXEC from also switching on the per-kick-off trace. With
+         * the Direct3D 11 back end the GPU thread spent ~40% of its time in
+         * WriteFile for these lines (tools/sampler, Town Square). */
+        s_nv2a_trace = getenv("RECOMP_NV2A_TRACE") != NULL
+                    || ((getenv("RECOMP_PB_SCAN") != NULL
+                         || getenv("RECOMP_PB_EXEC") != NULL)
+                        && getenv("OOGIE_QUIET_GPU") == NULL);

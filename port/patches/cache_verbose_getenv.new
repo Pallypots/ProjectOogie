@@ -1,0 +1,9 @@
+    /* Oogie patch (port/patches/cache_verbose_getenv): this getenv ran on
+     * every draw (tools/sampler: ~13% of the GPU thread in ucrtbase called
+     * from here, Town Square, D3D11 back end). Cached like the one in
+     * nv2a_pb_exec_method. */
+    static int s_verbose_draw = -1;
+    if (s_verbose_draw < 0)
+        s_verbose_draw = getenv("RECOMP_PB_EXEC_VERBOSE") != NULL;
+    if (s_verbose_draw) {
+        static int shown;

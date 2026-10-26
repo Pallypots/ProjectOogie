@@ -1,0 +1,2 @@
+const float *nv2a_vsh_constant(uint32_t index)
+{

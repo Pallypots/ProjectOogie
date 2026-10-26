@@ -1,0 +1,5 @@
+static Nv2aVertex *backend_slot(void)
+{
+    if (!s_bverts
+        && !(s_bverts = (Nv2aVertex *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bverts)))
+        return NULL;

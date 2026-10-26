@@ -1,0 +1,1 @@
+    s_gpu.texs[0].palette = 0;          /* ponytail: no palettised formats */

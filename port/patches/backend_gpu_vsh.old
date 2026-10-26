@@ -1,0 +1,4 @@
+static void raster_batch_program(void)
+{
+    uint32_t i, n = s_gpu.idx_count;
+

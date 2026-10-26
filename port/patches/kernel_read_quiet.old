@@ -1,0 +1,3 @@
+    {
+        const uint8_t *p = (const uint8_t *)XBOX_TO_NATIVE(buffer_va);
+        uint32_t got = (uint32_t)ios.Information;

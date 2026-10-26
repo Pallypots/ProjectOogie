@@ -1,0 +1,6 @@
+/* Oogie (KNOWN_ISSUES #48): host thread ids for the voice-select race check. */
+__declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
+static unsigned oogie_tid(void) { return (unsigned)GetCurrentThreadId(); }
+static volatile unsigned oogie_fecv_tid;
+
+static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)

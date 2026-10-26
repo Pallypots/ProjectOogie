@@ -1,0 +1,5 @@
+    /* Project Oogie: PsCreateSystemThreadEx's CreateSuspended, honoured
+     * (t_spawn_suspended, set by the bridge below). See there. */
+    th = CreateThread(NULL, 0, bridge_thread_main, s, t_spawn_suspended ? CREATE_SUSPENDED : 0, NULL);
+    t_spawn_suspended = 0;
+    if (!th) free(s);

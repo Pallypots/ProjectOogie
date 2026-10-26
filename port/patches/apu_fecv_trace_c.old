@@ -1,0 +1,1 @@
+static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)

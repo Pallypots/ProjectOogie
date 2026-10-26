@@ -1,0 +1,3 @@
+    if (!g_xa2_initialized || !g_xa2_source) return 0;
+
+    while (num_samples > 0) {

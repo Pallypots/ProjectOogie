@@ -1,0 +1,2 @@
+    th = CreateThread(NULL, 0, bridge_thread_main, s, 0, NULL);
+    if (!th) free(s);

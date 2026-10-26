@@ -1,0 +1,18 @@
+            if ((s_gpu.xf_mode & 3) == 2 && s_xf) {
+                fprintf(stderr, "[FTRACE]     v0 %g %g %g %g  v1 %g %g  v2 %g %g%c",
+                        s_xf[0].pos[0], s_xf[0].pos[1], s_xf[0].pos[2],
+                        s_xf[0].pos[3], s_xf[1].pos[0], s_xf[1].pos[1],
+                        s_xf[2].pos[0], s_xf[2].pos[1], 10);
+                /* Oogie diagnostic patch (port/patches/diag_trace_d0): the
+                 * vertex program's colour outputs for vertex 0, to check the
+                 * full-screen fade quads (KNOWN_ISSUES #25), and for inline
+                 * batches the first raw vertex words the title sent. */
+                fprintf(stderr, "[FTRACE]     d0 %g %g %g %g  d1 %g %g %g %g%c",
+                        s_xf[0].d0[0], s_xf[0].d0[1], s_xf[0].d0[2], s_xf[0].d0[3],
+                        s_xf[0].d1[0], s_xf[0].d1[1], s_xf[0].d1[2], s_xf[0].d1[3], 10);
+                if (s_gpu.inline_active && s_gpu.inline_count >= 8)
+                    fprintf(stderr, "[FTRACE]     inline %08X %08X %08X %08X %08X %08X %08X %08X%c",
+                            s_gpu.inline_buf[0], s_gpu.inline_buf[1], s_gpu.inline_buf[2],
+                            s_gpu.inline_buf[3], s_gpu.inline_buf[4], s_gpu.inline_buf[5],
+                            s_gpu.inline_buf[6], s_gpu.inline_buf[7], 10);
+            }

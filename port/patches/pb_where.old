@@ -1,0 +1,3 @@
+                if (s_exec_enabled)
+                    nv2a_pb_exec_method(subch, m,
+                                        *(const uint32_t *)(mem + va));

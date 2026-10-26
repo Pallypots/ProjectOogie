@@ -1,0 +1,24 @@
+            o[k].v = textured ? uv[k][1] : 0.0f;
+            {
+                /* screen-space vertex: specular is attribute 4, texture
+                 * coordinates 1-3 attributes 10-12 */
+                OogieVertexExtra *x = &s_bextra[&o[k] - s_bverts];
+                float a[4];
+                int st;
+                memset(x, 0, sizeof *x);
+                x->fog = 1.0f;
+                x->q0 = 1.0f;
+                if (s_gpu.attr[4].offset && s_gpu.attr[4].stride
+                        && fetch_attr(&s_gpu.attr[4], ix[k], a))
+                    memcpy(x->spec, a, sizeof a);
+                for (st = 1; st < 4; st++) {
+                    a[0] = a[1] = a[2] = 0.0f; a[3] = 1.0f;
+                    if (s_gpu.attr[9 + st].offset && s_gpu.attr[9 + st].stride)
+                        fetch_attr(&s_gpu.attr[9 + st], ix[k], a);
+                    if (s_gpu.attr[9 + st].size < 4)
+                        a[3] = 1.0f;
+                    oogie_extra_tc(st, a, x->tc[st - 1]);
+                }
+            }
+        }
+        s_bcount += 3;

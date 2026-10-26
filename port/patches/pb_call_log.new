@@ -1,0 +1,12 @@
+                uint32_t sub = 0x80000000u | ((w & 0xFFFFFFFCu) & 0x0FFFFFFFu);
+                s_tot_calls++;
+                {
+                    /* Project Oogie #66: a CALL whose target is in the ring D3D
+                     * writes (0x80002000 up) is the walker reading a data word as
+                     * a command, i.e. it lost its place. Where and what. */
+                    static unsigned n_rc;
+                    if (sub >= 0x80002000u && sub < 0x80100000u && n_rc++ < 30)
+                        fprintf(stderr, "  [NV2A] CALL into the ring: word %08X at 0x%08X -> 0x%08X (segment end 0x%08X)\n",
+                                w, va - 4, sub, end_va);
+                    if (n_rc == 1) { extern void oogie_pb_history_dump(void); oogie_pb_history_dump(); }
+                }

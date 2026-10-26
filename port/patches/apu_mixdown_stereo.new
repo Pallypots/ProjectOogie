@@ -1,0 +1,30 @@
+                /* Oogie (KNOWN_ISSUES #48): the even/odd split sent the
+                 * centre (2), LFE (3) and every effect send (10..31, mono
+                 * I3DL2 reverb at 10) to one side only. Measured in Town
+                 * Square (RECOMP_APU_BINS=1): bins 2 and 10 carry as much as
+                 * the fronts, so the mix leaned left by 3-5 dB. Speaker bins
+                 * keep their side (0,4,6,8 left; 1,5,7,9 right); centre and
+                 * LFE go to both at -3 dB; the effect sends, which the
+                 * absent GP DSP would have turned into its own output, go to
+                 * both at -6 dB. RECOMP_APU_MIXDOWN_EVENODD=1: the old split. */
+                static int evenodd = -1;
+                if (evenodd < 0) {
+                    const char *e = getenv("RECOMP_APU_MIXDOWN_EVENODD");
+                    evenodd = e && *e && *e != '0';
+                }
+                if (evenodd) {
+                    for (int b = 0; b < NUM_MIXBINS; ++b) {
+                        if (b & 1) right += mixbins[b][i];
+                        else       left  += mixbins[b][i];
+                    }
+                } else {
+                    float c = 0.0f, fx = 0.0f;
+                    left  = mixbins[0][i] + mixbins[4][i] + mixbins[6][i] + mixbins[8][i];
+                    right = mixbins[1][i] + mixbins[5][i] + mixbins[7][i] + mixbins[9][i];
+                    c = 0.7071f * (mixbins[2][i] + mixbins[3][i]);
+                    for (int b = 10; b < NUM_MIXBINS; ++b)
+                        fx += mixbins[b][i];
+                    fx *= 0.5f;
+                    left  += c + fx;
+                    right += c + fx;
+                }

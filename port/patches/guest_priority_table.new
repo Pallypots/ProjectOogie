@@ -1,0 +1,46 @@
+/* Project Oogie (dev cycle 4): each guest thread's priority, by its thread
+ * object. KeSetBasePriorityThread hands the guest thread object to
+ * SetThreadPriority as if it were a host handle, which fails, so every host
+ * thread stayed at normal priority (gl1: all 45 at 0). The guest CPU lock
+ * (guest_cpu_priority) reads the priority the game asked for from here. */
+#define OOGIE_PRIO_N 512
+static volatile uint32_t g_oogie_prio_obj[OOGIE_PRIO_N];
+static volatile LONG g_oogie_prio_val[OOGIE_PRIO_N];
+static int oogie_prio_get(uint32_t obj)
+{
+    int i;
+    if (!obj) return 0;
+    for (i = 0; i < OOGIE_PRIO_N; i++)
+        if (g_oogie_prio_obj[i] == obj) return (int)g_oogie_prio_val[i];
+    return 0;
+}
+static LONG oogie_prio_set(uint32_t obj, LONG inc)
+{
+    int i, free_i = -1;
+    LONG prev = 0;
+    for (i = 0; i < OOGIE_PRIO_N; i++) {
+        if (g_oogie_prio_obj[i] == obj) {
+            prev = g_oogie_prio_val[i];
+            g_oogie_prio_val[i] = inc;
+            return prev;
+        }
+        if (free_i < 0 && !g_oogie_prio_obj[i]) free_i = i;
+    }
+    if (free_i < 0) free_i = (int)(obj >> 4) % OOGIE_PRIO_N;   /* full: reuse a slot */
+    g_oogie_prio_val[free_i] = inc;
+    g_oogie_prio_obj[free_i] = obj;
+    return prev;
+}
+
+static void bridge_KeSetBasePriorityThread(void)
+{
+    LONG prev = oogie_prio_set(STACK_ARG(0), (LONG)STACK_ARG(1));
+    {
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 40)
+            fprintf(stderr, "  [KERNEL] KeSetBasePriorityThread: thread object 0x%08X priority %d (was %d)\n",
+                    STACK_ARG(0), (int)(LONG)STACK_ARG(1), (int)prev);
+    }
+    (void)xbox_KeSetBasePriorityThread(XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
+    g_eax = (uint32_t)prev;
+}

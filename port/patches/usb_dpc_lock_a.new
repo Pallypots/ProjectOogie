@@ -1,0 +1,91 @@
+/* Project Oogie (KNOWN_ISSUES #43): the DISPATCH_LEVEL lock.
+ *
+ * On the single-CPU console a thread that raises to DISPATCH_LEVEL cannot be
+ * cut into by a DPC until it lowers again; that is how the USB driver (XPP)
+ * guards its transfer-descriptor free list ([0x4334EC], sub_0025F2C6 /
+ * 0x25E000 / 0x258D31) against its own DPC. Here DPCs run on the timer
+ * thread, so the two edited the list at once and a link of -1 was taken
+ * (sub_0025F390+0x49C writing 0xFFFFFFFF; sub_0025E6FB+0x4CC with esi =
+ * 0xFFFFFFF0). A guest thread that raises through the kernel (these bridges)
+ * from below DISPATCH now holds this lock until it lowers below it, and a DPC
+ * whose routine is in XPP takes it before it runs. Only XPP's DPCs: the
+ * DirectSound DPC must still get in while a raised game thread polls for it
+ * (#55, recomp_manual.c), and DirectSound raises without these bridges.
+ * The DPC waits at most 50 ms, then runs anyway (logged).
+ * OOGIE_USB_DPC_LOCK=0 turns it off. */
+static CRITICAL_SECTION g_dispatch_lock;
+static INIT_ONCE g_dispatch_lock_once = INIT_ONCE_STATIC_INIT;
+static RECOMP_TLS int t_dispatch_held;
+static int g_dispatch_lock_on = -1;
+
+static BOOL CALLBACK dispatch_lock_init(PINIT_ONCE o, PVOID p, PVOID *c)
+{
+    const char *e = getenv("OOGIE_USB_DPC_LOCK");
+    (void)o; (void)p; (void)c;
+    InitializeCriticalSection(&g_dispatch_lock);
+    g_dispatch_lock_on = !(e && *e == '0');
+    return TRUE;
+}
+static int dispatch_lock_on(void)
+{
+    InitOnceExecuteOnce(&g_dispatch_lock_once, dispatch_lock_init, NULL, NULL);
+    return g_dispatch_lock_on;
+}
+static void dispatch_lock_raised(UCHAR old_irql, UCHAR new_irql)
+{
+    if (old_irql < 2 && new_irql >= 2 && !t_dispatch_held && dispatch_lock_on()) {
+        EnterCriticalSection(&g_dispatch_lock);
+        t_dispatch_held = 1;
+    }
+}
+static void dispatch_lock_lowered(UCHAR new_irql)
+{
+    if (new_irql < 2 && t_dispatch_held) {
+        t_dispatch_held = 0;
+        LeaveCriticalSection(&g_dispatch_lock);
+    }
+}
+/* For a DPC: 1 if taken (release with dispatch_lock_dpc_done). */
+static int dispatch_lock_dpc(uint32_t routine)
+{
+    static volatile LONG n_late;
+    DWORD t0;
+    if (routine < 0x00257F40u || routine >= 0x0025F9E0u || t_dispatch_held || !dispatch_lock_on())
+        return 0;
+    if (TryEnterCriticalSection(&g_dispatch_lock))
+        return 1;
+    t0 = GetTickCount();
+    while (GetTickCount() - t0 < 50) {
+        SwitchToThread();
+        if (TryEnterCriticalSection(&g_dispatch_lock))
+            return 1;
+    }
+    if (InterlockedIncrement(&n_late) <= 10) {
+        fprintf(stderr, "  [KERNEL] USB DPC 0x%08X ran with a thread still at DISPATCH_LEVEL (50 ms)\n", routine);
+        fflush(stderr);
+    }
+    return 0;
+}
+
+/* ── KfRaiseIrql / KfLowerIrql (ordinals 160, 161) ────── */
+static void bridge_KfRaiseIrql(void)
+{
+    uint32_t new_irql = g_ecx; /* fastcall: KIRQL is passed in CL */
+    g_eax = (uint32_t)xbox_KfRaiseIrql((UCHAR)new_irql);
+    dispatch_lock_raised((UCHAR)g_eax, (UCHAR)new_irql);
+}
+
+static void bridge_KfLowerIrql(void)
+{
+    uint32_t new_irql = g_ecx; /* fastcall: KIRQL is passed in CL */
+    xbox_KfLowerIrql((UCHAR)new_irql);
+    dispatch_lock_lowered((UCHAR)new_irql);
+    g_eax = 0;
+}
+
+/* ── KeRaiseIrqlToDpcLevel (ordinal 129) ─────────────────── */
+static void bridge_KeRaiseIrqlToDpcLevel(void)
+{
+    g_eax = (uint32_t)xbox_KeRaiseIrqlToDpcLevel();
+    dispatch_lock_raised((UCHAR)g_eax, 2);
+}

@@ -1,0 +1,73 @@
+/* Oogie patch (port/patches/swizzled_surfaces): swizzled render targets.
+ *
+ * SET_SURFACE_FORMAT type 2 (bits 8-11) means the NV2A writes the colour
+ * surface in swizzled order, which is how a title can render into a texture
+ * and then sample it as an ordinary swizzled texture. Oogie's Revenge renders
+ * its glow/blur passes into 128x128 swizzled A8R8G8B8 targets (format
+ * 0x07070228) and samples them back as format 0x06 (SZ_A8R8G8B8). This
+ * rasteriser writes rows, so the samples came back scrambled: dark striped
+ * blocks over every gameplay frame (KNOWN_ISSUES #30).
+ *
+ * While a swizzled surface is the draw target it is kept in row order, so
+ * clears, blending and the rasteriser work unchanged; when drawing moves to
+ * another target (or at a flip) it is re-ordered into swizzled layout, and if
+ * the title draws into it again it is put back into row order first. Only a
+ * tightly packed surface (pitch == width * bpp) is handled. */
+static struct { uint32_t off, w, h, bpp, pitch; int active; } s_swz;
+
+static void swz_convert(int to_swizzled)
+{
+    uint8_t *base = (uint8_t *)xbox_GetMemoryOffset() + dma_resolve(s_swz.off);
+    size_t n = (size_t)s_swz.w * s_swz.h * s_swz.bpp;
+    uint8_t *tmp = (uint8_t *)malloc(n);
+    uint32_t x, y;
+
+    if (!tmp)
+        return;
+    for (y = 0; y < s_swz.h; y++)
+        for (x = 0; x < s_swz.w; x++) {
+            size_t lin = ((size_t)y * s_swz.w + x) * s_swz.bpp;
+            size_t swz = (size_t)swizzle_offset(x, y, s_swz.w, s_swz.h) * s_swz.bpp;
+            if (to_swizzled)
+                memcpy(tmp + swz, base + lin, s_swz.bpp);
+            else
+                memcpy(tmp + lin, base + swz, s_swz.bpp);
+        }
+    memcpy(base, tmp, n);
+    free(tmp);
+}
+
+static uint32_t surface_bpp(void);
+
+static void swz_sync(void)
+{
+    int want = ((s_gpu.format >> 8) & 0xFu) == 2u && s_gpu.color_offset != 0;
+
+    /* A back end keeps surfaces on the GPU; guest memory is not the image,
+     * and converting it only cost time (~10% of the GPU thread, sampler). */
+    if (s_backend)
+        return;
+
+    if (s_swz.active && (!want || s_swz.off != s_gpu.color_offset)) {
+        swz_convert(1);
+        s_swz.active = 0;
+    }
+    if (want && !s_swz.active) {
+        uint32_t lw = (s_gpu.format >> 16) & 0xFFu, lh = (s_gpu.format >> 24) & 0xFFu;
+        if (lw > 12 || lh > 12)
+            return;
+        s_swz.off = s_gpu.color_offset;
+        s_swz.w = 1u << lw;
+        s_swz.h = 1u << lh;
+        s_swz.bpp = surface_bpp();
+        s_swz.pitch = s_gpu.pitch;
+        if (!s_swz.bpp || s_swz.pitch != s_swz.w * s_swz.bpp)
+            return;
+        swz_convert(0);
+        s_swz.active = 1;
+    }
+}
+
+static void clear_surface(uint32_t param)
+{
+    swz_sync();   /* Oogie patch: swizzled_surfaces */

@@ -1,0 +1,2 @@
+    memset(&g_contig_used[first], 0, n);
+    g_contig_len[first] = 0;

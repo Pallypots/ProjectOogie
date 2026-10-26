@@ -1,0 +1,25 @@
+        uint32_t t0 = s_gpu.tris_drawn;
+        uint64_t p0 = s_gpu.pixels;
+        /* Oogie diagnostic patch (port/patches/diag_skip_batches), inert unless
+         * set: OOGIE_DIAG_SKIP_EQ=<blend equation> drops blended batches using
+         * that equation; OOGIE_DIAG_SKIP_TEX=<texture offset> drops batches
+         * sampling that stage-0 texture. Used to find which full-screen pass
+         * turns finished Town Square frames black (KNOWN_ISSUES #25). */
+        {
+            static int s_diag = -1;
+            static uint32_t s_skip_eq, s_skip_tex;
+            if (s_diag < 0) {
+                const char *e = getenv("OOGIE_DIAG_SKIP_EQ");
+                const char *t = getenv("OOGIE_DIAG_SKIP_TEX");
+                s_skip_eq = e ? (uint32_t)strtoul(e, NULL, 0) : 0;
+                s_skip_tex = t ? (uint32_t)strtoul(t, NULL, 0) : 0;
+                s_diag = (s_skip_eq || s_skip_tex) ? 1 : 0;
+            }
+            if (s_diag
+                && ((s_skip_eq && s_gpu.blend_enable && s_gpu.blend_equation == s_skip_eq)
+                    || (s_skip_tex && s_gpu.texs[0].valid && s_gpu.texs[0].offset == s_skip_tex)))
+                return;
+        }
+        raster_batch();
+        if (s_ftrace == 2) {
+            fprintf(stderr, "[FTRACE] %s prim %u n %u surf %08X %ux%u+%u+%u"

@@ -1,0 +1,17 @@
+        uint32_t head = rd32(ed + 8);
+        uint32_t head0;
+        /* Project Oogie (#43): a head of 0xFFFFFFF0 (a freed TD's -1 link)
+         * is never a descriptor, and the driver crashes following it
+         * (sub_0025E6FB+0x80 / +0x4CC, sk721). Repair it to an empty queue
+         * (head = tail, toggle kept, halt cleared). */
+        if ((head & ED_PTR_MASK) == ED_PTR_MASK && tail != ED_PTR_MASK) {
+            static unsigned n_rep;
+            volatile LONG *hpr = (volatile LONG *)guest_ptr(ed + 8, 4);
+            uint32_t fixed = tail | (head & ED_HEAD_TOGGLE);
+            if (hpr && InterlockedCompareExchange(hpr, (LONG)fixed, (LONG)head) == (LONG)head) {
+                if (n_rep++ < 10)
+                    fprintf(stderr, "[OHCI] ED %08X head was %08X: repaired to the empty queue %08X\n", ed, head, fixed);
+                head = fixed;
+            }
+        }
+        head0 = head;               /* Oogie patch ohci_ed_head: see below */

@@ -1,0 +1,3 @@
+void nv2a_pb_set_semaphore_target(uint32_t guest_va) { s_sem_va = guest_va; }
+static uint32_t s_oogie_sem_off;      /* SET_SEMAPHORE_OFFSET (patch sem_offset) */
+static int s_oogie_sem_off_set;

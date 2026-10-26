@@ -1,0 +1,8 @@
+    {   /* Oogie patch (port/patches/quiet_draw_progress): OOGIE_QUIET_GPU=1
+         * drops this progress line (one write per 200 draws). */
+        static int quiet = -1;
+        if (quiet < 0)
+            quiet = getenv("OOGIE_QUIET_GPU") != NULL;
+        if (!quiet && (s_gpu.draws % 200) == 0)
+            fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
+    }

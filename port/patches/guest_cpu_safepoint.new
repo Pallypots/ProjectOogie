@@ -1,0 +1,16 @@
+int guest_cpu_held(void) { return t_guest_held; }
+
+/* Project Oogie (dev cycle 4): a safepoint. The port calls this from guest
+ * function calls while g_gcpu_preempt is set (a higher-priority thread
+ * waits); the holder steps aside and queues again behind it. Only in the
+ * thread's own guest code (not inside a kernel call's callback) and only at
+ * PASSIVE level, which the caller checks. */
+void guest_cpu_safepoint(void)
+{
+    if (!t_guest_held || t_dispatch_depth != 0)
+        return;
+    t_guest_held = 0;
+    LeaveCriticalSection(&g_guest_cpu);
+    EnterCriticalSection(&g_guest_cpu);
+    t_guest_held = 1;
+}

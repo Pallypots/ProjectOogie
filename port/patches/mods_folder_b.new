@@ -1,0 +1,11 @@
+        } else {
+            swprintf_s(host_path_buf, buf_size, L"%s\\%s", base_dir, remainder_wide);
+            /* Project Oogie: a disc file may come from a mod (mods_folder_a) */
+            if (base_dir == s_game_dir && remainder_wide[0]) {
+                WCHAR modded[MAX_PATH];
+                if (oogie_mod_file(remainder_wide, modded, MAX_PATH)) {
+                    fprintf(stderr, "  [MODS] %s -> %S\n", xbox_path, modded);
+                    wcscpy_s(host_path_buf, buf_size, modded);
+                }
+            }
+        }

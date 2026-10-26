@@ -1,0 +1,8 @@
+    if (contig_q_ms()) {
+        uint32_t q;
+        DWORD now = GetTickCount();
+        for (q = first; q < first + n; q++) { g_contig_used[q] = CONTIG_QUARANTINED; g_contig_qt[q] = now; }
+        g_contig_q_pages += n;
+    } else
+        memset(&g_contig_used[first], 0, n);
+    g_contig_len[first] = 0;

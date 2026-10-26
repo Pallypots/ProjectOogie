@@ -1,0 +1,3 @@
+        static volatile LONG logged;      /* Oogie: stops at 20, never wraps (see wait_log_bounded) */
+        if (logged < 20 && InterlockedIncrement(&logged) <= 20) {
+            fprintf(stderr, "  [KERNEL] NtWaitForMultipleObjectsEx: count=%u type=%u timeout=%s\n",

@@ -1,0 +1,2 @@
+void guest_cpu_part(void)
+{

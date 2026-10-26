@@ -1,0 +1,1 @@
+#define XBOX_MAX_THREAD_STACKS  8

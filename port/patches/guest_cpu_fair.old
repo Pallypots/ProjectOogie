@@ -1,0 +1,1 @@
+static CRITICAL_SECTION g_guest_cpu;

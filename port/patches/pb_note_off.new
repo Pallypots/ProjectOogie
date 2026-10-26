@@ -1,0 +1,16 @@
+static void note(uint32_t subch, uint32_t method)
+{
+    /* Oogie patch (port/patches/pb_note_off): the method inventory costs
+     * 5-7% of the GPU thread in a level (tools/sampler, pf1, 2026-10-18: it
+     * runs for every word, inline vertex data included) and is only read by
+     * the periodic survey report. Off under OOGIE_QUIET_GPU=1 (play.bat and
+     * the test scripts set it) unless OOGIE_PB_SURVEY=1. */
+    static int off = -1;
+    uint16_t *slot;
+    if (off < 0) {
+        const char *q = getenv("OOGIE_QUIET_GPU"), *v = getenv("OOGIE_PB_SURVEY");
+        off = (q && *q && *q != '0') && !(v && *v && *v != '0');
+    }
+    if (off)
+        return;
+    slot = &s_seen_slot[subch & 7][(method & 0x1FFC) / 4];

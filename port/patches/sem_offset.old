@@ -1,0 +1,2 @@
+    if (subch == 0 && method == 0x1D70 && s_sem_va) {
+        uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();

@@ -1,0 +1,35 @@
+                        static uint32_t put_lo, put_hi;
+                        {
+                            /* Project Oogie (KNOWN_ISSUES #66): D3D restarts
+                             * its ring by writing GET and PUT together
+                             * (KickOff's 0x2000 path, sub_001D76F0 at
+                             * 0x1D7766). The segment scan read only PUT, took
+                             * the step back for a wrap and walked from the old
+                             * PUT to the ring's end again: old commands ran a
+                             * second time (the GPU semaphore went back from
+                             * 0xB21 to 0x963 over and over, rl2), and fences
+                             * and frames went wrong. When GET is not what we
+                             * last wrote, the title moved it: carry on from
+                             * there, as the DMA walk does. OOGIE_PB_RESET_OLD=1
+                             * restores the old behaviour. */
+                            static int reset_old = -1;
+                            static unsigned n_reset;
+                            uint32_t get_now = *(volatile uint32_t *)
+                                               ((char *)regs + NV2A_USER_DMA_GET);
+                            if (reset_old < 0) {
+                                const char *e = getenv("OOGIE_PB_RESET_OLD");
+                                reset_old = e && *e == '1';
+                            }
+                            if (!reset_old && get_written != 0xFFFFFFFFu
+                                    && get_now != get_written && last_put) {
+                                if (n_reset++ < 20)
+                                    fprintf(stderr, "  [NV2A] the title reset the ring: GET 0x%08X (we left 0x%08X), PUT 0x%08X; scanning from GET\n",
+                                            get_now, get_written, put);
+                                if (put > get_now)
+                                    nv2a_pb_scan_segment(XBOX_CONTIG_BASE | (get_now & 0x0FFFFFFFu),
+                                                         XBOX_CONTIG_BASE | (put & 0x0FFFFFFFu));
+                                last_put = put;
+                                goto oogie_ring_scanned;
+                            }
+                        }
+                        if (!put_lo || put < put_lo) put_lo = put;

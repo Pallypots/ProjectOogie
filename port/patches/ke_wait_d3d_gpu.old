@@ -1,0 +1,4 @@
+    uint32_t timeout_ptr = STACK_ARG(4);
+    HANDLE h;
+
+    {   /* An event the title built itself (see ke_guest_event). Its

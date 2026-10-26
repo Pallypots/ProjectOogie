@@ -1,0 +1,16 @@
+/* Oogie patch (port/patches/vsh_access): the loaded program and the constant
+ * file, read by the backend_gpu_vsh patch to hand a batch to the GPU
+ * (port/src/oogie_gpu_vsh.h). */
+const uint32_t (*oogie_vsh_program(uint32_t *start))[4]
+{
+    *start = s_start_slot;
+    return (const uint32_t (*)[4])s_program;
+}
+
+const float (*oogie_vsh_constants(void))[4]
+{
+    return (const float (*)[4])s_const;
+}
+
+const float *nv2a_vsh_constant(uint32_t index)
+{

@@ -1,0 +1,7 @@
+    if (!result && !q_retried && contig_q_expire(1)) {
+        q_retried = 1;               /* short of room: use the waiting pages */
+        goto contig_retry;
+    }
+    if (result) {
+        g_contig_allocs++;
+        contig_report("alloc", result, n);

@@ -1,0 +1,18 @@
+        if (bpp == 4) {
+            /* Oogie patch (port/patches/clear_channels_32): honour the
+             * per-channel CLEAR_SURFACE bits (R 0x10, G 0x20, B 0x40, A 0x80).
+             * Oogie's Revenge clears alpha alone (0x80) after drawing the
+             * scene; writing the whole pixel blanked the frame. */
+            uint32_t m = ((param & 0x80u) ? 0xFF000000u : 0u)
+                       | ((param & 0x10u) ? 0x00FF0000u : 0u)
+                       | ((param & 0x20u) ? 0x0000FF00u : 0u)
+                       | ((param & 0x40u) ? 0x000000FFu : 0u);
+            uint32_t *p = (uint32_t *)row + s_gpu.clip_x;
+            if (m == 0xFFFFFFFFu) {
+                for (x = 0; x < s_gpu.clip_w; x++)
+                    p[x] = s_gpu.clear_color;
+            } else {
+                for (x = 0; x < s_gpu.clip_w; x++)
+                    p[x] = (p[x] & ~m) | (s_gpu.clear_color & m);
+            }
+        } else if (bpp == 2) {

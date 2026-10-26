@@ -1,0 +1,3 @@
+        s_nv2a_trace = getenv("RECOMP_NV2A_TRACE") != NULL
+                    || getenv("RECOMP_PB_SCAN") != NULL
+                    || getenv("RECOMP_PB_EXEC") != NULL;

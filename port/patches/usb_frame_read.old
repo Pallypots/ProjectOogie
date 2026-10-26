@@ -1,0 +1,2 @@
+    if (aligned == HcFmNumber)
+        v = (hc->reads >> 3) & 0xFFFFu;

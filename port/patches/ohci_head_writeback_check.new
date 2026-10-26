@@ -1,0 +1,4 @@
+            /* Project Oogie (#43): never write back a head that is not a
+             * descriptor or the tail. */
+            if (hp && ((head & ED_PTR_MASK) == tail || guest_ok(head & ED_PTR_MASK, 16)))
+                InterlockedCompareExchange(hp, (LONG)head, (LONG)head0);

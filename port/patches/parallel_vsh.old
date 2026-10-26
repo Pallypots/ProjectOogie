@@ -1,0 +1,9 @@
+static void raster_batch_program(void)
+{
+    uint32_t i, n = s_gpu.idx_count;
+
+    if (!s_xf && !(s_xf = (Nv2aVshOutput *)calloc(NV_MAX_INDICES, sizeof *s_xf)))
+        return;
+    for (i = 0; i < n; i++)
+        if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
+            return;                                    /* no program loaded */

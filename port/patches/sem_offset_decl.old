@@ -1,0 +1,1 @@
+void nv2a_pb_set_semaphore_target(uint32_t guest_va) { s_sem_va = guest_va; }

@@ -1,0 +1,5 @@
+    case NV097_FLIP_STALL:
+        if (s_swz.active) {   /* Oogie patch: swizzled_surfaces */
+            swz_convert(1);
+            s_swz.active = 0;
+        }

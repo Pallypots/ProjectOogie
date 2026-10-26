@@ -1,0 +1,2 @@
+        Sleep(10);
+        kernel_vblank_tick();  /* the GPU's frame clock */

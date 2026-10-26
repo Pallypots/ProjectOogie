@@ -1,0 +1,10 @@
+        } else {
+            s_n_out_other++;
+            /* Project Oogie: the rumble packet goes to the host pad
+             * (port/src/pc_input.c). */
+            {
+                extern void oogie_pad_rumble(int port, const uint8_t *p, int len);
+                const uint8_t *rp = len > 0 ? guest_ptr(cbp, (uint32_t)len) : NULL;
+                oogie_pad_rumble(pad, rp, len);
+            }
+        }

@@ -1,0 +1,17 @@
+static unsigned g_gcpu_next, g_gcpu_serving;
+static void gcpu_enter(void)
+{
+    unsigned t;
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    t = g_gcpu_next++;
+    while (t != g_gcpu_serving)
+        SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, INFINITE, 0);
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+}
+static void gcpu_leave(void)
+{
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    g_gcpu_serving++;
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+    WakeAllConditionVariable(&g_gcpu_cv);
+}

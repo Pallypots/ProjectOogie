@@ -1,0 +1,138 @@
+/* Oogie patch (port/patches/backend_gpu_vsh): vertex programs on the GPU
+ * (port/src/oogie_gpu_vsh.h, KNOWN_ISSUES #37). A back end that registered a
+ * draw function gets each vertex-program batch whole -- the inputs the
+ * program reads (fetched exactly as transform_vertex does), the program, its
+ * constants and the batch as a triangle list -- instead of the interpreter's
+ * output. Programs that write c[] stay on the CPU. */
+#include "oogie_gpu_vsh.h"
+const uint32_t (*oogie_vsh_program(uint32_t *start))[4];
+const float (*oogie_vsh_constants(void))[4];
+static OogieVshDrawFn s_gvsh_fn;
+static float *s_gvsh_in;
+static uint32_t *s_gvsh_idx;
+
+void oogie_gpu_vsh_register(OogieVshDrawFn fn)
+{
+    s_gvsh_fn = fn;
+}
+
+static int oogie_gpu_vsh_batch(void)
+{
+    const uint32_t (*prog)[4];
+    uint32_t start, s, ninsn = 0, mask = 0, nin = 0, n = s_gpu.idx_count, i, k, ni = 0;
+    uint32_t slot[NV2A_VSH_INPUTS];
+    OogieVshBatch b;
+    Nv2aSurface surf;
+    Nv2aRenderState rs;
+    Nv2aTexture tex;
+    int st;
+
+    if (!s_gvsh_fn || !backend_draws() || !batch_uses_program())
+        return 0;
+    prog = oogie_vsh_program(&start);
+    for (s = start; s < NV2A_VSH_SLOTS; s++) {
+        const uint32_t *ins = prog[s];
+        if (((ins[2] >> 26) & 3) == 2 || ((ins[2] >> 11) & 3) == 2
+                || ((ins[3] >> 28) & 3) == 2)
+            mask |= 1u << ((ins[1] >> 9) & 15);         /* reads an input */
+        if (((ins[3] >> 12) & 15) && !((ins[3] >> 11) & 1))
+            return 0;                                   /* writes c[] */
+        ninsn++;
+        if (ins[3] & 1)
+            break;
+    }
+    if (s == NV2A_VSH_SLOTS)
+        return 0;                                       /* no program */
+    for (i = 0; i < NV2A_VSH_INPUTS; i++)
+        if (mask & (1u << i))
+            slot[nin++] = i;
+    if (!s_gvsh_in && !(s_gvsh_in = (float *)malloc((size_t)NV_MAX_INDICES
+                                                    * NV2A_VSH_INPUTS * 4 * sizeof(float))))
+        return 0;
+    if (!s_gvsh_idx && !(s_gvsh_idx = (uint32_t *)malloc((size_t)NV_MAX_INDICES * 3
+                                                         * sizeof(uint32_t))))
+        return 0;
+    for (i = 0; i < n; i++) {
+        float *d = s_gvsh_in + (size_t)i * nin * 4;
+        for (k = 0; k < nin; k++)
+            if (!fetch_attr(&s_gpu.attr[slot[k]], s_gpu.idx[i], d + k * 4)
+                    && slot[k] < NV_VERTEX_ATTRS)
+                memcpy(d + k * 4, s_gpu.imm_attr[slot[k]], 4 * sizeof(float));
+    }
+#define GVSH_TRI(p, q, r) do { s_gvsh_idx[ni++] = (p); s_gvsh_idx[ni++] = (q); \
+                               s_gvsh_idx[ni++] = (r); } while (0)
+    switch (s_gpu.prim) {
+    case NV_PRIM_TRIANGLES:
+        for (i = 0; i + 2 < n; i += 3) GVSH_TRI(i, i + 1, i + 2);
+        break;
+    case NV_PRIM_TRIANGLE_STRIP:
+        for (i = 0; i + 2 < n; i++) GVSH_TRI(i, i + 1, i + 2);
+        break;
+    case NV_PRIM_TRIANGLE_FAN:
+    case NV_PRIM_POLYGON:
+        for (i = 1; i + 1 < n; i++) GVSH_TRI(0, i, i + 1);
+        break;
+    case NV_PRIM_QUADS:
+        for (i = 0; i + 3 < n; i += 4) { GVSH_TRI(i, i + 1, i + 2); GVSH_TRI(i, i + 2, i + 3); }
+        break;
+    case NV_PRIM_QUAD_STRIP:
+        for (i = 0; i + 3 < n; i += 2) { GVSH_TRI(i, i + 1, i + 3); GVSH_TRI(i, i + 3, i + 2); }
+        break;
+    default:
+        return 0;                       /* points, lines: as the CPU path */
+    }
+#undef GVSH_TRI
+    if (!ni)
+        return 1;
+    b.program = prog + start;
+    b.ninsn = ninsn;
+    b.constants = oogie_vsh_constants();
+    b.inputs = s_gvsh_in;
+    b.nverts = n;
+    b.ninputs = nin;
+    b.input_mask = mask;
+    b.indices = s_gvsh_idx;
+    b.nindices = ni;
+    b.aa_sx = s_gpu.aa_sx;
+    b.aa_sy = s_gpu.aa_sy;
+    b.fog_enable = s_gpu.fog_enable;
+    b.fog_mode = s_gpu.fog_mode;
+    b.fog_param[0] = s_gpu.fog_param[0];
+    b.fog_param[1] = s_gpu.fog_param[1];
+    for (st = 0; st < 4; st++) {
+        const Texture *t = &s_gpu.texs[st];
+        int lin = t->valid && !tex_size_from_format(t->color) && t->width && t->height;
+        b.tscale[st][0] = lin ? 1.0f / (float)t->width : 1.0f;
+        b.tscale[st][1] = lin ? 1.0f / (float)t->height : 1.0f;
+    }
+    current_surface(&surf);
+    current_render_state(&rs);
+    if (s_gpu.texs[0].valid) {
+        tex.offset = s_gpu.texs[0].offset;
+        tex.width  = s_gpu.texs[0].width;
+        tex.height = s_gpu.texs[0].height;
+        tex.pitch  = s_gpu.texs[0].pitch;
+        tex.color  = s_gpu.texs[0].color;
+        tex.addr_u = s_gpu.texs[0].addr_u;
+        tex.addr_v = s_gpu.texs[0].addr_v;
+        tex.levels = s_gpu.texs[0].pitch ? 1 : s_gpu.texs[0].levels;
+        tex.filter = s_gpu.texs[0].filter;
+    }
+    if (!s_gvsh_fn(&surf, &rs, s_gpu.texs[0].valid ? &tex : NULL, &b))
+        return 0;
+    s_gpu.batches_program++;
+    s_gpu.verts_program += n;
+    if (s_gpu.texs[0].valid)
+        note_texture_use();
+    s_gpu.tris_drawn += ni / 3;
+    note_drawn();
+    return 1;
+}
+
+static void raster_batch_program(void)
+{
+    uint32_t i, n = s_gpu.idx_count;
+
+    if (oogie_gpu_vsh_batch())
+        return;
+

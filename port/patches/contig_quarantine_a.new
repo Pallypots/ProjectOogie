@@ -1,0 +1,52 @@
+/* Project Oogie: freed pages wait before they are handed out again
+ * (KNOWN_ISSUES #43/#56). With RECOMP_HEAP_RECLAIM a freed block went to the
+ * very next request and was zeroed at once; the emulated USB controller, APU
+ * and GPU run on their own threads and can still be finishing with it, and
+ * three crashes read garbage through such structures (XPP TDs, a DSOUND
+ * voice). Freed pages are marked 3 and become free after
+ * OOGIE_CONTIG_QUARANTINE_MS (default 3000, 0 = off); a request that finds
+ * no room releases them all and tries again, so this never fails a request
+ * that would have worked (#38). Lock held for all of these. */
+#define CONTIG_QUARANTINED 3u
+static DWORD    g_contig_qt[CONTIG_PAGES];     /* tick of the free */
+static uint32_t g_contig_q_pages;
+
+static DWORD contig_q_ms(void)
+{
+    static long ms = -1;
+    if (ms < 0) {
+        const char *e = getenv("OOGIE_CONTIG_QUARANTINE_MS");
+        ms = e && *e ? atol(e) : 3000;
+        if (ms < 0) ms = 0;
+    }
+    return (DWORD)ms;
+}
+
+static void contig_q_free_page(uint32_t q)
+{
+    g_contig_used[q] = 0;
+    g_contig_q_pages--;
+    if (q < g_contig_first_free)
+        g_contig_first_free = q;
+}
+
+/* Release quarantined pages whose time is up (all of them if `all`).
+ * Returns how many were released. */
+static uint32_t contig_q_expire(int all)
+{
+    uint32_t q, released = 0;
+    DWORD now, ms = contig_q_ms();
+    if (!g_contig_q_pages)
+        return 0;
+    now = GetTickCount();
+    for (q = 0; q < CONTIG_PAGES && g_contig_q_pages; q++)
+        if (g_contig_used[q] == CONTIG_QUARANTINED
+                && (all || now - g_contig_qt[q] >= ms)) {
+            contig_q_free_page(q);
+            released++;
+        }
+    return released;
+}
+
+static void contig_take(uint32_t first, uint32_t n)
+{

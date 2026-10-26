@@ -1,0 +1,30 @@
+static CRITICAL_SECTION g_guest_cpu;
+/* Project Oogie (KNOWN_ISSUES #61): a first-come-first-served guest CPU.
+ * A critical section is not fair: a thread that lets go and takes it again
+ * at once nearly always wins. The title's main thread polls its task table
+ * in a loop of kernel calls (mutex 0x40C858 wait/release, sub_000583C0),
+ * letting go and retaking the CPU millions of times (gw1: 28 million in
+ * 50 s) while the workers it waits for, woken seconds earlier, never got it,
+ * so boot stopped under RECOMP_GUEST_LOCK=1. A ticket lock hands the CPU to
+ * the longest waiter. The calls below on g_guest_cpu go through it. */
+static SRWLOCK g_gcpu_m = SRWLOCK_INIT;
+static CONDITION_VARIABLE g_gcpu_cv = CONDITION_VARIABLE_INIT;
+static unsigned g_gcpu_next, g_gcpu_serving;
+static void gcpu_enter(void)
+{
+    unsigned t;
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    t = g_gcpu_next++;
+    while (t != g_gcpu_serving)
+        SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, INFINITE, 0);
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+}
+static void gcpu_leave(void)
+{
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    g_gcpu_serving++;
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+    WakeAllConditionVariable(&g_gcpu_cv);
+}
+#define EnterCriticalSection(cs) ((cs) == &g_guest_cpu ? gcpu_enter() : EnterCriticalSection(cs))
+#define LeaveCriticalSection(cs) ((cs) == &g_guest_cpu ? gcpu_leave() : LeaveCriticalSection(cs))

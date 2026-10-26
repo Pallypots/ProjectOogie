@@ -1,0 +1,5 @@
+static void bridge_KeSetBasePriorityThread(void)
+{
+    g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
+        XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
+}

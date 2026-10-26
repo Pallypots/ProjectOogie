@@ -1,0 +1,9 @@
+    /* Oogie patch (port/patches/vertex_current_value): an input that is not
+     * fetched from an array takes its current value, the last one set with
+     * SET_VERTEX_DATA* (imm_attr, reset to 0,0,0,1), as the NV2A and xemu do,
+     * instead of 0,0,0,1. Oogie's Revenge sets the colour of its full-screen
+     * fade that way; at 0,0,0,1 the fade was opaque black over every level
+     * frame (KNOWN_ISSUES #25). */
+    for (a = 0; a < NV2A_VSH_INPUTS; a++)
+        if (!fetch_attr(&s_gpu.attr[a], index, in[a]) && a < NV_VERTEX_ATTRS)
+            memcpy(in[a], s_gpu.imm_attr[a], sizeof in[a]);

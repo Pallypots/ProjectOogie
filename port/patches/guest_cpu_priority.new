@@ -1,0 +1,155 @@
+/* Project Oogie (dev cycle 4, 2026-10-23): the guest CPU goes by priority,
+ * as the console's scheduler does: among the threads that want it, the one
+ * of highest priority (its host thread priority, which KeSetBasePriorityThread
+ * sets), and among equals the longest waiter. The game builds each frame on a
+ * task thread of higher priority than the main thread that draws the overlay
+ * and swaps; on the console the task always finished its step first. A
+ * thread gives the CPU up at every kernel call (waits, yields, releases), so a
+ * task woken by the main thread's release runs before the main thread goes
+ * on. OOGIE_GCPU_FIFO=1: first come, first served (the #61 ticket order). */
+#define GCPU_MAXW 256
+static unsigned g_gcpu_next;
+static struct { unsigned t; int p; } g_gcpu_w[GCPU_MAXW];
+static int g_gcpu_nw, g_gcpu_busy, g_gcpu_fifo = -1, g_gcpu_holder_p;
+/* Set while a thread of higher priority than the holder waits: the holder
+ * gives the CPU up at its next safepoint (a guest function call,
+ * guest_cpu_safepoint), as the console's scheduler preempts it. */
+volatile LONG g_gcpu_preempt;
+#define GCPU_HOLD_N 128
+static DWORD g_gcpu_hold_id[GCPU_HOLD_N];
+static int g_gcpu_hold_p[GCPU_HOLD_N];
+static double g_gcpu_hold_ms[GCPU_HOLD_N];
+static LARGE_INTEGER g_gcpu_held_at, g_gcpu_qpf;
+static void gcpu_enter(void)
+{
+    unsigned t;
+    int p = oogie_prio_get(g_thread_obj_va), i;     /* guest_priority_table */
+    static RECOMP_TLS int t_gcpu_seen;
+    if (t_gcpu_seen != p + 100) {
+        t_gcpu_seen = p + 100;
+        fprintf(stderr, "  [GCPU] host thread %lu (thread object 0x%08X) wants the guest CPU at priority %d\n",
+                (unsigned long)GetCurrentThreadId(), g_thread_obj_va, p);
+    }
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    if (g_gcpu_fifo < 0) {
+        const char *e = getenv("OOGIE_GCPU_FIFO");
+        g_gcpu_fifo = e && *e == '1';
+    }
+    if (g_gcpu_fifo) p = 0;
+    t = g_gcpu_next++;
+    if (g_gcpu_busy && p > g_gcpu_holder_p)
+        g_gcpu_preempt = 1;
+    if (g_gcpu_nw < GCPU_MAXW) {
+        g_gcpu_w[g_gcpu_nw].t = t;
+        g_gcpu_w[g_gcpu_nw].p = p;
+        g_gcpu_nw++;
+    }
+    {
+        /* every 10 s: how often the CPU changed hands and how long threads
+         * waited for it (OOGIE_GCPU_STATS=0: no report) */
+        static ULONGLONG t0;
+        static unsigned takes, waits;
+        static double wait_ms;
+        static int on = -1;
+        ULONGLONG now = GetTickCount64();
+        if (on < 0) { const char *e = getenv("OOGIE_GCPU_STATS"); on = !(e && *e == '0'); }
+        takes++;
+        if (g_gcpu_busy) {
+            LARGE_INTEGER a, b, f;
+            QueryPerformanceCounter(&a);
+            waits++;
+            for (;;) {
+                int best = -1;
+                for (i = 0; i < g_gcpu_nw; i++)
+                    if (best < 0 || g_gcpu_w[i].p > g_gcpu_w[best].p
+                            || (g_gcpu_w[i].p == g_gcpu_w[best].p && (int)(g_gcpu_w[i].t - g_gcpu_w[best].t) < 0))
+                        best = i;
+                if (!g_gcpu_busy && (best < 0 || g_gcpu_w[best].t == t)) break;
+                {
+                    /* Time slice among equals (OOGIE_GCPU_QUANTUM_MS, default
+                     * 10; 0 = none): a holder of the same priority that has
+                     * run that long steps aside at its next safepoint. */
+                    static int q = -1;
+                    if (q < 0) { const char *e = getenv("OOGIE_GCPU_QUANTUM_MS"); q = e && *e ? atoi(e) : 10; }
+                    if (!SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, q > 0 ? (DWORD)q : INFINITE, 0)
+                            && q > 0 && g_gcpu_busy && p >= g_gcpu_holder_p) {
+                        LARGE_INTEGER nw;
+                        QueryPerformanceCounter(&nw);
+                        if (!g_gcpu_qpf.QuadPart) QueryPerformanceFrequency(&g_gcpu_qpf);
+                        if ((nw.QuadPart - g_gcpu_held_at.QuadPart) * 1000 >= (LONGLONG)q * g_gcpu_qpf.QuadPart)
+                            g_gcpu_preempt = 1;
+                    }
+                }
+            }
+            QueryPerformanceCounter(&b); QueryPerformanceFrequency(&f);
+            wait_ms += (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)f.QuadPart;
+        }
+        if (!t0) t0 = now;
+        if (on && now - t0 >= 10000) {
+            int k, top[5] = { -1, -1, -1, -1, -1 }, m;
+            double total = 0;
+            for (k = 0; k < GCPU_HOLD_N; k++) total += g_gcpu_hold_ms[k];
+            for (m = 0; m < 5; m++)
+                for (k = 0; k < GCPU_HOLD_N; k++) {
+                    int dup = 0, q;
+                    for (q = 0; q < m; q++) if (top[q] == k) dup = 1;
+                    if (!dup && g_gcpu_hold_id[k] && (top[m] < 0 || g_gcpu_hold_ms[k] > g_gcpu_hold_ms[top[m]]))
+                        top[m] = k;
+                }
+            fprintf(stderr, "  [GCPU] 10 s: %u takes, %u had to wait, %.0f ms waited in all; CPU held %.0f ms:",
+                    takes, waits, wait_ms, total);
+            for (m = 0; m < 5; m++)
+                if (top[m] >= 0 && g_gcpu_hold_ms[top[m]] >= 1)
+                    fprintf(stderr, " %lu(p%d) %.0f ms", (unsigned long)g_gcpu_hold_id[top[m]],
+                            g_gcpu_hold_p[top[m]], g_gcpu_hold_ms[top[m]]);
+            fprintf(stderr, "\n");
+            for (k = 0; k < GCPU_HOLD_N; k++) g_gcpu_hold_ms[k] = 0;
+            t0 = now; takes = waits = 0; wait_ms = 0;
+        }
+    }
+    for (;;) {
+        int best = -1;
+        for (i = 0; i < g_gcpu_nw; i++)
+            if (best < 0 || g_gcpu_w[i].p > g_gcpu_w[best].p
+                    || (g_gcpu_w[i].p == g_gcpu_w[best].p && (int)(g_gcpu_w[i].t - g_gcpu_w[best].t) < 0))
+                best = i;
+        if (!g_gcpu_busy && (best < 0 || g_gcpu_w[best].t == t)) {
+            if (best >= 0) g_gcpu_w[best] = g_gcpu_w[--g_gcpu_nw];
+            break;
+        }
+        SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, INFINITE, 0);
+    }
+    g_gcpu_busy = 1;
+    g_gcpu_holder_p = p;
+    {
+        /* still a waiter above the new holder? */
+        int k, hi = 0;
+        for (k = 0; k < g_gcpu_nw; k++) if (g_gcpu_w[k].p > p) hi = 1;
+        g_gcpu_preempt = hi;
+    }
+    QueryPerformanceCounter(&g_gcpu_held_at);
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+}
+static void gcpu_leave(void)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    AcquireSRWLockExclusive(&g_gcpu_m);
+    {
+        /* time held, by host thread (a small open-addressed table) */
+        DWORD id = GetCurrentThreadId();
+        int k = (int)(id % GCPU_HOLD_N), n;
+        if (!g_gcpu_qpf.QuadPart) QueryPerformanceFrequency(&g_gcpu_qpf);
+        for (n = 0; n < GCPU_HOLD_N; n++, k = (k + 1) % GCPU_HOLD_N)
+            if (g_gcpu_hold_id[k] == id || !g_gcpu_hold_id[k]) {
+                g_gcpu_hold_id[k] = id;
+                g_gcpu_hold_p[k] = g_gcpu_holder_p;
+                g_gcpu_hold_ms[k] += (double)(now.QuadPart - g_gcpu_held_at.QuadPart) * 1000.0
+                                     / (double)g_gcpu_qpf.QuadPart;
+                break;
+            }
+    }
+    g_gcpu_busy = 0;
+    ReleaseSRWLockExclusive(&g_gcpu_m);
+    WakeAllConditionVariable(&g_gcpu_cv);
+}

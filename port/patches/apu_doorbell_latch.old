@@ -1,0 +1,2 @@
+    if (page != s_dsp_ack_auto_page) {
+        s_dsp_ack_auto_page = page;

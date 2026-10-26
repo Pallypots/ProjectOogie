@@ -1,0 +1,45 @@
+    int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
+
+    /* Oogie (KNOWN_ISSUES #48): RECOMP_APU_BINS=1 prints the level of every
+     * mixbin every 2 s, the level of the even-bin (L) and odd-bin (R) sums,
+     * and the correlation of bin 1 with bins 0, 5, 7 and 9, to see where
+     * the title routes its music and what cancels. */
+    {
+        static int on = -1;
+        static double acc[NUM_MIXBINS], accl, accr, x[4], xn[4];
+        static unsigned frames;
+        static const int pair[4] = { 0, 5, 7, 9 };
+        if (on < 0) { const char *e = getenv("RECOMP_APU_BINS"); on = e && *e && *e != '0'; }
+        if (on) {
+            for (int i = 0; i < NUM_SAMPLES_PER_FRAME; ++i) {
+                double l = 0, r = 0;
+                for (int b = 0; b < NUM_MIXBINS; ++b) {
+                    acc[b] += (double)mixbins[b][i] * mixbins[b][i];
+                    if (b & 1) r += mixbins[b][i]; else l += mixbins[b][i];
+                }
+                accl += l * l; accr += r * r;
+                for (int k = 0; k < 4; ++k) {
+                    x[k] += (double)mixbins[1][i] * mixbins[pair[k]][i];
+                    xn[k] += (double)mixbins[pair[k]][i] * mixbins[pair[k]][i];
+                }
+            }
+            if (++frames == 3000) {
+                double n = frames * NUM_SAMPLES_PER_FRAME;
+                fprintf(stderr, "[APU-BINS] L=%.0f R=%.0f", sqrt(accl / n) * 32767.0,
+                        sqrt(accr / n) * 32767.0);
+                for (int k = 0; k < 4; ++k)
+                    if (xn[k] > 0 && acc[1] > 0)
+                        fprintf(stderr, " c1_%d=%.2f", pair[k], x[k] / sqrt(xn[k] * acc[1]));
+                fprintf(stderr, " |");
+                for (int b = 0; b < NUM_MIXBINS; ++b) {
+                    double r = sqrt(acc[b] / n) * 32767.0;
+                    if (r >= 1.0) fprintf(stderr, " %d=%.0f", b, r);
+                    acc[b] = 0;
+                }
+                fprintf(stderr, "\n");
+                accl = accr = 0;
+                for (int k = 0; k < 4; ++k) x[k] = xn[k] = 0;
+                frames = 0;
+            }
+        }
+    }

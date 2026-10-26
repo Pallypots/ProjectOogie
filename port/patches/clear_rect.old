@@ -1,0 +1,3 @@
+        current_surface(&surf);
+        current_render_state(&rs);
+        s_backend->clear(&surf, &rs, param, s_gpu.clear_color,

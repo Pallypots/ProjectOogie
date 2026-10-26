@@ -1,0 +1,6 @@
+            uint16_t *p = (uint16_t *)row + s_gpu.clip_x;
+            /* Oogie patch (port/patches/clear_channels_16): an alpha-only
+             * clear leaves an R5G6B5 surface alone. */
+            if (param & 0x70u)
+                for (x = 0; x < s_gpu.clip_w; x++)
+                    p[x] = v;

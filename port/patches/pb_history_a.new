@@ -1,0 +1,28 @@
+/* Project Oogie (KNOWN_ISSUES #66): the last 32 decisions of the segment
+ * scan below, printed by oogie_pb_history_dump() when the GPU semaphore goes
+ * back (recomp_manual.c oogie_sem_watch): which step replayed old commands. */
+#define OOGIE_PBH 32
+static struct { uint32_t tick, last_put, put, get, kind, a, b; } s_pbh[OOGIE_PBH];
+static volatile LONG s_pbh_n;
+static void oogie_pbh_add(uint32_t last_put, uint32_t put, uint32_t get, uint32_t kind, uint32_t a, uint32_t b)
+{
+    LONG i = InterlockedIncrement(&s_pbh_n) - 1;
+    i %= OOGIE_PBH;
+    s_pbh[i].tick = GetTickCount(); s_pbh[i].last_put = last_put; s_pbh[i].put = put;
+    s_pbh[i].get = get; s_pbh[i].kind = kind; s_pbh[i].a = a; s_pbh[i].b = b;
+}
+void oogie_pb_history_dump(void)
+{
+    static const char *k[] = { "forward", "wrap", "wrap-guess", "reset", "same" };
+    LONG n = s_pbh_n, i, from = n > OOGIE_PBH ? n - OOGIE_PBH : 0;
+    fprintf(stderr, "[PB] last %ld ring steps (oldest first):\n", (long)(n - from));
+    for (i = from; i < n; i++) {
+        int j = (int)(i % OOGIE_PBH);
+        fprintf(stderr, "[PB]   t=%u %s last_put %08X put %08X get %08X scanned %08X..%08X\n",
+                s_pbh[j].tick, s_pbh[j].kind < 5 ? k[s_pbh[j].kind] : "?", s_pbh[j].last_put,
+                s_pbh[j].put, s_pbh[j].get, s_pbh[j].a, s_pbh[j].b);
+    }
+}
+
+void xbox_Nv2aAckBusyBits(void)
+{

@@ -1,0 +1,6 @@
+    contig_lock();
+    for (q = first; q < first + n; q++)          /* a placement takes waiting pages */
+        if (g_contig_used[q] == CONTIG_QUARANTINED)
+            contig_q_free_page(q);
+    for (q = first; q < first + n; q += run) {
+        if (g_contig_used[q]) { run = 1; continue; }

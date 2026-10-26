@@ -1,0 +1,41 @@
+    /* Project Oogie (KNOWN_ISSUES #51): an exact 60 Hz clock, locked to the
+     * frames shown. The old clock (GetTickCount, 16 ms, checked every 10 ms)
+     * fired every 20 ms with jitter, and kept firing while the host was
+     * slow, so the game saw two or more vblanks per frame where the console
+     * never does; its menus then drew only part of their layers (inventory,
+     * results, main menu flashing). A vblank now waits until the frame of
+     * the previous one has been shown, unless nothing has been shown for
+     * 100 ms (loading, a title that waits on vblanks without drawing).
+     * The lock is opt-in (OOGIE_VBLANK_LOCK=1); by default the clock runs
+ * free at an exact 60 Hz. */
+    {
+        extern volatile long g_oogie_presents;
+        static LARGE_INTEGER freq, next;
+        static long presents_at_last;
+        static long long last_present_ms;
+        static int lock = -1;
+        static long seen_presents = -1;
+        LARGE_INTEGER q;
+        if (lock < 0) {
+            /* Off by default: Bink waits for a vblank before showing a
+             * film frame, so a vblank that waits for a shown frame held
+             * films to the 100 ms escape (intro film 4 min, mt2).
+             * OOGIE_VBLANK_LOCK=1 turns the lock on. */
+            const char *e = getenv("OOGIE_VBLANK_LOCK");
+            lock = e && *e && *e != '0';
+            QueryPerformanceFrequency(&freq);
+        }
+        QueryPerformanceCounter(&q);
+        now = (long long)GetTickCount64();
+        if (g_oogie_presents != seen_presents) { seen_presents = g_oogie_presents; last_present_ms = now; }
+        if (!next.QuadPart || q.QuadPart - next.QuadPart > freq.QuadPart / 4)
+            next.QuadPart = q.QuadPart;           /* first tick, or far behind */
+        if (q.QuadPart < next.QuadPart)
+            return;
+        if (lock && g_oogie_presents == presents_at_last && now - last_present_ms < 100)
+            return;                               /* the last frame is not shown yet */
+        next.QuadPart += freq.QuadPart / 60;
+        presents_at_last = g_oogie_presents;
+        (void)next_ms;
+    }
+    InterlockedIncrement(&g_vblank_total);

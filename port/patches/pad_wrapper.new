@@ -1,0 +1,6 @@
+/* Project Oogie: port/src/pc_input.c provides xbox_InputGetState (adds
+ * PlayStation and other pads through SDL2, rebinding and rumble) and falls
+ * back to this one under OOGIE_INPUT_OLD=1. */
+DWORD xbox_InputGetState_xinput(DWORD dwPort, XBOX_INPUT_STATE *pState)
+{
+    XINPUT_STATE xi_state;

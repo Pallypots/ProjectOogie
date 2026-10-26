@@ -1,0 +1,3 @@
+    if (result) {
+        g_contig_allocs++;
+        contig_report("alloc", result, n);

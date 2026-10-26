@@ -1,0 +1,2 @@
+                        static uint32_t put_lo, put_hi;
+                        if (!put_lo || put < put_lo) put_lo = put;

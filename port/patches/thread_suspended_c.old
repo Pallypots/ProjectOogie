@@ -1,0 +1,2 @@
+    uint32_t start_routine   = STACK_ARG(9);
+    /* In SPAWN mode there is no privileged "first call": every thread is real,

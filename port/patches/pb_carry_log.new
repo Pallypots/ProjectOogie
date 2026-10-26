@@ -1,0 +1,11 @@
+        if (s_sg_left) {
+            /* Project Oogie #66: parameters carried over from the previous
+             * segment are being applied here: which method, how many, where. */
+            static unsigned n_cl;
+            if (n_cl++ < 40)
+                fprintf(stderr, "  [NV2A] carry: %u parameter(s) of method %04X (subch %u) applied at 0x%08X\n",
+                        s_sg_left, s_sg_method, s_sg_subch, va);
+        }
+        while (s_sg_left && va < end_va && (va & 0x0FFFFFFFu) + 4u <= PB_RAM_BYTES) {
+            uint32_t m = s_sg_noninc ? s_sg_method : s_sg_method + s_sg_i * 4;
+            g_oogie_pb_va = va; g_oogie_pb_in_call = 2;   /* 2: a carried parameter */

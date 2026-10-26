@@ -1,0 +1,7 @@
+/* Project Oogie: does this thread hold the guest CPU (RECOMP_GUEST_LOCK)?
+ * For port code that waits on its own locks or yields outside a kernel call
+ * and must let the CPU go meanwhile (port/src/recomp_manual.c). */
+int guest_cpu_held(void) { return t_guest_held; }
+
+void guest_cpu_part(void)
+{

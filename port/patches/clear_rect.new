@@ -1,0 +1,14 @@
+        current_surface(&surf);
+        current_render_state(&rs);
+        {
+            /* Project Oogie (KNOWN_ISSUES #57): the clear rectangle,
+             * SET_CLEAR_RECT_HORIZONTAL / _VERTICAL (min in bits 15:0, max
+             * in 31:16, inclusive). The back end cleared the whole surface:
+             * the game clears only a panel (the figure on the trophy shelf,
+             * the inventory, the loading banner) and lost what it had drawn
+             * around it. The back end reads it from here. */
+            extern uint32_t g_oogie_clear_rect[2];
+            g_oogie_clear_rect[0] = s_reg[0x1D98 / 4];
+            g_oogie_clear_rect[1] = s_reg[0x1D9C / 4];
+        }
+        s_backend->clear(&surf, &rs, param, s_gpu.clear_color,

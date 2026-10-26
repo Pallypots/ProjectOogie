@@ -1,0 +1,4 @@
+                for (int b = 0; b < NUM_MIXBINS; ++b) {
+                    if (b & 1) right += mixbins[b][i];
+                    else       left  += mixbins[b][i];
+                }

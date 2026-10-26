@@ -1,0 +1,3 @@
+void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+{
+    static int inited;

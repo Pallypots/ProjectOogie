@@ -1,0 +1,3 @@
+        static int logged;
+        if (logged++ < 20) {
+            fprintf(stderr, "  [KERNEL] NtWaitForMultipleObjectsEx: count=%u type=%u timeout=%s\n",

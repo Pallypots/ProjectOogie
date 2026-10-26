@@ -1,0 +1,9 @@
+    contig_lock();
+    contig_q_expire(0);
+    uint32_t lo_page0 = lo_page;
+    int q_retried = 0;
+contig_retry:
+    lo_page = lo_page0;
+    result = 0;
+    if (lo_page < g_contig_first_free) lo_page = g_contig_first_free;
+    p = (lo_page + align_pages - 1) & ~(align_pages - 1);

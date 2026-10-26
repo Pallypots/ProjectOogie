@@ -1,0 +1,2 @@
+        uint32_t head = rd32(ed + 8);
+        uint32_t head0 = head;      /* Oogie patch ohci_ed_head: see below */

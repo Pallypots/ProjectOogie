@@ -1,0 +1,15 @@
+    if (!g_xa2_initialized || !g_xa2_source) return 0;
+
+    {
+        /* Project Oogie: master volume, mute in the background and while
+         * the settings menu is open (port/src/pc_menu.c). */
+        extern float oogie_audio_gain(void);
+        static float applied = -1.0f;
+        float g = oogie_audio_gain();
+        if (g != applied) {
+            IXAudio2SourceVoice_SetVolume(g_xa2_source, g, XAUDIO2_COMMIT_NOW);
+            applied = g;
+        }
+    }
+
+    while (num_samples > 0) {

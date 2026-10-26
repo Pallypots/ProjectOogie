@@ -1,0 +1,3 @@
+    { int _irql = xbox_IrqlEnterInterrupt(2); fn(); xbox_IrqlLeaveInterrupt(_irql); }
+    return 1;
+}

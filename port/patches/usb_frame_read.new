@@ -1,0 +1,11 @@
+    /* Project Oogie (KNOWN_ISSUES #43): the frame number moved with every
+     * eight reads, so a driver polling it for "the controller has moved on to
+     * the next frame" saw that at once, even while the lists were being
+     * walked, and edited a queue under the controller (head 0xFFFFFFF0 in
+     * sub_0025E6FB). It now reads the counter the tick advances after each
+     * walk. OOGIE_USB_FRAME_OLD=1: the old behaviour. */
+    if (aligned == HcFmNumber) {
+        static int old = -1;
+        if (old < 0) { const char *e = getenv("OOGIE_USB_FRAME_OLD"); old = e && *e == '1'; }
+        v = old ? ((hc->reads >> 3) & 0xFFFFu) : (hc->reg[HcFmNumber / 4] & 0xFFFFu);
+    }

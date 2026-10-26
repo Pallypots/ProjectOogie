@@ -1,0 +1,36 @@
+    uint32_t timeout_ptr = STACK_ARG(4);
+    HANDLE h;
+
+    {   /* Project Oogie (KNOWN_ISSUES #58): D3D's "GPU far behind" wait.
+         * BlockOnTime (sub_001D78D0, 0x1D7A18) patches a NO_OPERATION with a
+         * value into the pushbuffer and then loops
+         * "while (KeWaitForSingleObject(device + 0x1DCC, ...))" on an event the
+         * GPU's software-method interrupt sets. D3D builds that event itself,
+         * so it has no shadow and every wait failed at once: the loop spun
+         * forever (owner, 2026-10-19 11:56, Shadow Oogie figure viewer:
+         * [STALL] game thread in bridge_KeWaitForSingleObject for 15 s+).
+         * The interrupt is not modelled, so: wait until the GPU has executed
+         * everything submitted (GET == PUT; the patched NO_OPERATION is before
+         * PUT, so the GPU has passed it) and report the event as signalled.
+         * At most 2 s, so this can never hang. */
+        uint32_t dev = BRIDGE_MEM32(0x001E25E8u);
+        if (dev && object == dev + 0x1DCCu) {
+            static unsigned n_seen, n_timeout;
+            volatile uint32_t *put = xbox_Nv2aRegPtr(0x800040);
+            volatile uint32_t *get = xbox_Nv2aRegPtr(0x800044);
+            DWORD t0 = GetTickCount();
+            int idle = 0;
+            while (GetTickCount() - t0 < 2000) {
+                if (!put || !get || *get == *put) { idle = 1; break; }
+                Sleep(1);
+            }
+            if (!idle) n_timeout++;
+            if (n_seen++ < 20 || !idle)
+                fprintf(stderr, "[D3D] GPU-far-behind wait #%u: %s after %lu ms (timeouts %u)\n",
+                        n_seen, idle ? "GPU caught up" : "gave up", (unsigned long)(GetTickCount() - t0), n_timeout);
+            g_eax = 0;                             /* STATUS_SUCCESS: signalled */
+            return;
+        }
+    }
+
+    {   /* An event the title built itself (see ke_guest_event). Its

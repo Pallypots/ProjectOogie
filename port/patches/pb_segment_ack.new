@@ -1,0 +1,12 @@
+        w = *(const uint32_t *)(mem + va);
+        va += 4;
+        words++;
+        /* Oogie patch (port/patches/pb_segment_ack): keep answering kickoffs
+         * while executing, as the DMA walk does (every 256 words). XDK D3D's
+         * kickoff sets a flush bit (0x100410 bit 16) and spins until it
+         * clears (Oogie sub_001D76F0 at 0x1D7730); the segment walk cleared
+         * it only between segments, so the game thread sat idle for the whole
+         * execution of each segment (tools/sampler: ~50% of the game thread
+         * in that spin) and game and GPU threads took turns. */
+        if (s_exec_enabled && (++s_ack_tick & 0xFFu) == 0)
+            xbox_Nv2aAckBusyBits();

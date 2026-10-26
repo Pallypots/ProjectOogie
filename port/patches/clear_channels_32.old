@@ -1,0 +1,5 @@
+        if (bpp == 4) {
+            uint32_t *p = (uint32_t *)row + s_gpu.clip_x;
+            for (x = 0; x < s_gpu.clip_w; x++)
+                p[x] = s_gpu.clear_color;
+        } else if (bpp == 2) {

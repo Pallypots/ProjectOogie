@@ -1,0 +1,13 @@
+    case NV097_FLIP_INCREMENT_WRITE:
+        {
+            /* Project Oogie (KNOWN_ISSUES #51/#57): the frame the title has
+             * just finished: D3D's Swap sends this right after the frame's
+             * last draw, before the next SetRenderTarget, so the colour
+             * target is still that frame's buffer. The back end shows it at
+             * the next FLIP_STALL instead of guessing (port/src/d3d11_backend.c). */
+            extern volatile uint32_t g_oogie_flip_done;
+            uint32_t off = s_gpu.drawn_offset ? s_gpu.drawn_offset : s_gpu.color_offset;
+            if (off)
+                g_oogie_flip_done = dma_resolve(off);
+        }
+        s_gpu.flip_write = s_gpu.flip_modulo

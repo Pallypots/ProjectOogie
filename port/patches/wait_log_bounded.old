@@ -1,0 +1,7 @@
+    static int logged = 0;
+    if (logged++ < 20) {
+        fprintf(stderr, "  [KERNEL] NtWaitForSingleObjectEx: token=0x%08X "
+                "handle=%p timeout=%s\n",
+                STACK_ARG(0), handle, timeout_ptr ? "finite" : "INFINITE");
+        fflush(stderr);
+    }

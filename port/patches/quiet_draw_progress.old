@@ -1,0 +1,2 @@
+    if ((s_gpu.draws % 200) == 0)
+        fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);

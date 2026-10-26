@@ -1,0 +1,3 @@
+    contig_lock();
+    if (lo_page < g_contig_first_free) lo_page = g_contig_first_free;
+    p = (lo_page + align_pages - 1) & ~(align_pages - 1);

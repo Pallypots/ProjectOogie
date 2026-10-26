@@ -1,0 +1,3 @@
+    EnterCriticalSection(cs);
+    xbox_cs_note_owner(cs);
+    if (g_cs_contention_reports <= 16) {

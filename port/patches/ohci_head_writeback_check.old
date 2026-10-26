@@ -1,0 +1,2 @@
+            if (hp)
+                InterlockedCompareExchange(hp, (LONG)head, (LONG)head0);

@@ -1,0 +1,5 @@
+        uint32_t t0 = s_gpu.tris_drawn;
+        uint64_t p0 = s_gpu.pixels;
+        raster_batch();
+        if (s_ftrace == 2) {
+            fprintf(stderr, "[FTRACE] %s prim %u n %u surf %08X %ux%u+%u+%u"

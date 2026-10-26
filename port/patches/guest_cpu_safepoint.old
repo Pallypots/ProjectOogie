@@ -1,0 +1,1 @@
+int guest_cpu_held(void) { return t_guest_held; }

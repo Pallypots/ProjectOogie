@@ -1,0 +1,35 @@
+/* Project Oogie (KNOWN_ISSUES #51, diagnostic): the last methods executed, for
+ * oogie_pb_ring_dump. Only with OOGIE_FRAME_LOG=1. Vertex data (inline
+ * arrays and array elements) is counted, not stored. */
+#define OOGIE_RING 512
+static struct { uint32_t subch, method, param, skipped; } s_oring[OOGIE_RING];
+static unsigned s_oring_pos, s_oring_skip;
+static int s_oring_on = -1;
+void oogie_pb_ring_dump(const char *why)
+{
+    unsigned i;
+    fprintf(stderr, "[RING] %s: last %u methods (oldest first)\n", why, OOGIE_RING);
+    for (i = 0; i < OOGIE_RING; i++) {
+        unsigned k = (s_oring_pos + i) % OOGIE_RING;
+        if (!s_oring[k].method && !s_oring[k].skipped) continue;
+        fprintf(stderr, "[RING]  s%u %04X %08X%s%u\n", s_oring[k].subch, s_oring[k].method,
+                s_oring[k].param, s_oring[k].skipped ? " +vtx " : " ", s_oring[k].skipped);
+    }
+    fflush(stderr);
+}
+
+void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+{
+    static int inited;
+
+    if (s_oring_on < 0) { const char *e = getenv("OOGIE_FRAME_LOG"); s_oring_on = e && *e && *e != '0'; }
+    if (s_oring_on) {
+        if (subch == 0 && ((method >= 0x1800 && method < 0x1A00) || method == 0x1818)) {
+            s_oring_skip++;
+        } else {
+            s_oring[s_oring_pos].subch = subch; s_oring[s_oring_pos].method = method;
+            s_oring[s_oring_pos].param = param; s_oring[s_oring_pos].skipped = s_oring_skip;
+            s_oring_skip = 0;
+            s_oring_pos = (s_oring_pos + 1) % OOGIE_RING;
+        }
+    }

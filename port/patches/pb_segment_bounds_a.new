@@ -1,0 +1,11 @@
+    while (va < end_va && words < 0x100000u) {
+        uint32_t w;
+        /* Oogie patch (port/patches/pb_segment_bounds): a JUMP or CALL taken
+         * from a half-written or stale command can name memory past the
+         * 64 MB contiguous window. The DMA walk refuses such targets
+         * (pb_bad_target); this walk read them and faulted (KNOWN_ISSUES #28:
+         * pb_walk_segment+0x5F reading guest 0x8F000000 during the title
+         * movie). Stop the segment instead. */
+        if ((va & 0x0FFFFFFFu) + 4u > PB_RAM_BYTES)
+            break;
+        w = *(const uint32_t *)(mem + va);

@@ -1,0 +1,34 @@
+    deliver:
+        {
+            /* Project Oogie (#43): the frame clock, after the walk. */
+            static int old_clock = -1;
+            if (old_clock < 0) { const char *e = getenv("OOGIE_USB_FRAME_OLD"); old_clock = e && *e == '1'; }
+            (void)old_clock;
+            /* The frame clock.
+             *
+             * INTR_SF was defined and never raised, and HcFmNumber only moved when
+             * something read it. That is enough for a driver that polls, and not
+             * enough for one that waits: USB enumeration is full of delays counted
+             * in frames -- the recovery time after SET_ADDRESS is the first -- and
+             * the Xbox stack enables StartOfFrame precisely to count them. Without
+             * a frame ever starting, enumeration stops one transfer past
+             * SET_ADDRESS with the driver waiting for time to pass.
+             *
+             * Twenty frames a tick because a frame is 1 ms and this loop sleeps
+             * 20. The count is what drivers compare; the rate is what they feel,
+             * and both are closer to right this way than a counter that never
+             * moves. */
+            {
+                uint32_t hcca = hc->reg[HcHCCA / 4];
+
+                hc->reg[HcFmNumber / 4] =
+                    (hc->reg[HcFmNumber / 4] + OHCI_TICK_MS) & 0xFFFFu;
+                /* HccaFrameNumber is 16 bits at +0x80 with a pad above it that the
+                 * controller zeroes, so a dword write is what hardware does. */
+                if (hcca)
+                    wr32(hcca + 0x80, hc->reg[HcFmNumber / 4]);
+                hc->reg[HcInterruptStatus / 4] |= INTR_SF;
+            }
+
+        }
+        status = hc->reg[HcInterruptStatus / 4] & enable & 0x7Fu;

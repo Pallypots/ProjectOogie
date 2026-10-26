@@ -1,0 +1,2 @@
+    deliver:
+        status = hc->reg[HcInterruptStatus / 4] & enable & 0x7Fu;

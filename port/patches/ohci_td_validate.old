@@ -1,0 +1,3 @@
+            uint32_t td = head & ED_PTR_MASK;
+            uint32_t next = rd32(td + 8) & ED_PTR_MASK;
+            uint32_t cc = ohci_do_td(hc, ed0, td);

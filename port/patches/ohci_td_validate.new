@@ -1,0 +1,16 @@
+            uint32_t td = head & ED_PTR_MASK;
+            uint32_t next = rd32(td + 8) & ED_PTR_MASK;
+            uint32_t cc;
+            /* Project Oogie (KNOWN_ISSUES #43): the driver edits a queue on
+             * the game's thread while this walks it on its own. It sets the
+             * ED's sKip bit first (the hardware then stops at the next
+             * frame); a TD it has freed links to -1. Taking such a TD made
+             * the head 0xFFFFFFF0 and XPP crashed following it
+             * (sub_0025E6FB reading 0x7FFFFFFF: owner, in a shop menu;
+             * ch1a, usb2 in combat). So: stop when the ED is now skipped,
+             * and leave a TD whose link is not a descriptor. */
+            if (rd32(ed) & ED_SKIP)
+                break;
+            if (next != tail && (next == ED_PTR_MASK || !guest_ok(next, 16)))
+                break;
+            cc = ohci_do_td(hc, ed0, td);

@@ -1,0 +1,38 @@
+/* Oogie patch (port/patches/backend_vertex_extra_*): what the Nv2aVertex
+ * contract leaves out -- the specular colour (v1), the fog factor, stage 0's
+ * q and texture coordinates 1-3 (normalised) -- in a parallel array indexed
+ * like s_bverts, so the D3D11 back end can run the register combiners
+ * (KNOWN_ISSUES #36). Layout shared with port/src/d3d11_backend.c. */
+typedef struct {
+    float spec[4];
+    float fog, q0;
+    float tc[3][4];
+} OogieVertexExtra;
+static OogieVertexExtra *s_bextra;
+static float fog_factor(float d);
+
+const OogieVertexExtra *oogie_backend_vertex_extra(void)
+{
+    return s_bextra;
+}
+
+/* Stage st's coordinate, normalised: linear (rect) textures are addressed in
+ * texels, swizzled and DXT ones already in 0..1. */
+static void oogie_extra_tc(int st, const float in[4], float out[4])
+{
+    const Texture *t = &s_gpu.texs[st];
+    out[0] = in[0]; out[1] = in[1]; out[2] = in[2]; out[3] = in[3];
+    if (t->valid && !tex_size_from_format(t->color) && t->width && t->height) {
+        out[0] /= (float)t->width;
+        out[1] /= (float)t->height;
+    }
+}
+
+static Nv2aVertex *backend_slot(void)
+{
+    if (!s_bverts
+        && !(s_bverts = (Nv2aVertex *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bverts)))
+        return NULL;
+    if (!s_bextra
+        && !(s_bextra = (OogieVertexExtra *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bextra)))
+        return NULL;

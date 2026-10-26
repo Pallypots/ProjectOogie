@@ -1,0 +1,12 @@
+    o->v = v->tex[0][1] * sv;
+    {
+        OogieVertexExtra *x = &s_bextra[o - s_bverts];
+        int st;
+        for (st = 0; st < 4; st++)
+            x->spec[st] = v->d1[st];
+        x->fog = fog_factor(v->fog[0]);
+        x->q0 = v->tex[0][3];
+        for (st = 1; st < 4; st++)
+            oogie_extra_tc(st, v->tex[st], x->tc[st - 1]);
+    }
+}

@@ -1,0 +1,11 @@
+        /* Oogie patch (port/patches/ohci_ed_head, KNOWN_ISSUES #43): write
+         * HeadP back only if the driver has not changed it since this pass
+         * read it. The driver edits its EDs on the game's thread while this
+         * walks them on its own; a stale write-back undid the driver's edit,
+         * and XPP later followed an ED head of 0xFFFFFFF0 (crash in
+         * sub_0025E6FB reading 0x7FFFFFFF, after a Continue). */
+        {
+            volatile LONG *hp = (volatile LONG *)guest_ptr(ed + 8, 4);
+            if (hp)
+                InterlockedCompareExchange(hp, (LONG)head, (LONG)head0);
+        }

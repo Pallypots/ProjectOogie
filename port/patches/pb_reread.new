@@ -1,0 +1,70 @@
+/* Project Oogie (KNOWN_ISSUES #66, diagnostics): was the word read before
+ * D3D wrote it? For each CALL the walk takes (first 50) and each bad target
+ * (first 16), the words around it are read again 2 ms later and printed side
+ * by side: a word that changed was read too early (the stream was not yet
+ * written when PUT moved past it); one that did not is really in the stream,
+ * so its decoding is what is wrong. OOGIE_PB_REREAD=0 turns it off. */
+extern ptrdiff_t xbox_GetMemoryOffset(void);
+static void pb_reread(const char *what, uint32_t w, uint32_t at, uint32_t target, uint32_t put)
+{
+    static int on = -1;
+    const volatile uint32_t *m;
+    uint32_t before[12], after[12], base;
+    int k, changed = 0;
+    /* The words and the history are always logged; the 50 ms / 500 ms
+     * re-reads hold the GPU thread, so they are opt-in: OOGIE_PB_REREAD=1. */
+    if (on < 0) { const char *e = getenv("OOGIE_PB_REREAD"); on = e && *e == '1'; }
+    if (at < 32 || at >= PB_RAM_BYTES - 32) return;
+    base = at - 32;
+    m = (const volatile uint32_t *)((const uint8_t *)xbox_GetMemoryOffset() + (0x80000000u | base));
+    for (k = 0; k < 12; k++) before[k] = m[k];
+    if (on) Sleep(50);
+    for (k = 0; k < 12; k++) { after[k] = m[k]; if (after[k] != before[k]) changed++; }
+    fprintf(stderr, "  [PB] %s word 0x%08X at 0x%08X -> 0x%08X (PUT 0x%08X): %s\n", what, w, at, target, put,
+            changed ? "CHANGED 50 ms later (read before it was written)" : "unchanged 50 ms later");
+    for (k = 0; k < 12; k++)
+        fprintf(stderr, "  [PB]     0x%08X: %08X -> %08X%s%s\n", base + k * 4, before[k], after[k],
+                before[k] != after[k] ? "  *" : "", base + k * 4 == at ? "  <==" : "");
+    {
+        uint32_t late[12];
+        int c2 = 0;
+        if (on) Sleep(450);
+        for (k = 0; k < 12; k++) { late[k] = m[k]; if (late[k] != after[k]) c2++; }
+        if (c2) {
+            fprintf(stderr, "  [PB]   and 500 ms later %d word(s) changed again:\n", c2);
+            for (k = 0; k < 12; k++)
+                if (late[k] != after[k])
+                    fprintf(stderr, "  [PB]     0x%08X: %08X -> %08X\n", base + k * 4, after[k], late[k]);
+        } else {
+            fprintf(stderr, "  [PB]   and unchanged 500 ms later\n");
+        }
+    }
+    {
+        /* What the walk decoded on the way here, oldest first. */
+        static unsigned n_hist;
+        unsigned j, cnt = s_hist_n < 24 ? s_hist_n : 24;
+        if (n_hist++ < 6) {
+            fprintf(stderr, "  [PB]   the last %u headers decoded (oldest first):\n", cnt);
+            for (j = cnt; j > 0; j--) {
+                unsigned i = (s_hist_n - j) % PB_HIST;
+                fprintf(stderr, "  [PB]     header 0x%08X at 0x%08X\n", s_hist[i].w, s_hist[i].at);
+            }
+            for (j = 0; j < 4 && j < s_flow_n; j++) {
+                unsigned i = (s_flow_n - 1 - j) % PB_HIST;
+                fprintf(stderr, "  [PB]   flow 0x%08X at 0x%08X -> 0x%08X\n", s_flow[i].w, s_flow[i].at, s_flow[i].to);
+            }
+        }
+    }
+}
+
+static int pb_bad_target(uint32_t w, uint32_t at, uint32_t target, uint32_t put)
+{
+    static unsigned total;
+    unsigned k;
+    {
+        static unsigned n_call, n_bad;
+        if ((w & 3u) == 2u && n_call++ < 3)
+            pb_reread("CALL", w, at, target, put);
+        else if ((target >= PB_RAM_BYTES || pb_ring_target_bad(w, at, target)) && n_bad++ < 3)
+            pb_reread("bad target", w, at, target, put);
+    }

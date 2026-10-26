@@ -1,0 +1,3 @@
+        /* Project Oogie (#43): the frame clock moved to after the list walk
+         * (at "deliver:" below), so a new frame starts once the controller
+         * is done with this one, as on hardware; see patch usb_frame_after. */

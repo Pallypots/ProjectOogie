@@ -1,0 +1,3 @@
+DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+{
+    XINPUT_STATE xi_state;

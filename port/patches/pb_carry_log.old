@@ -1,0 +1,2 @@
+        while (s_sg_left && va < end_va && (va & 0x0FFFFFFFu) + 4u <= PB_RAM_BYTES) {
+            uint32_t m = s_sg_noninc ? s_sg_method : s_sg_method + s_sg_i * 4;

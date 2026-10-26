@@ -1,0 +1,2 @@
+        Sleep(1);              /* Project Oogie: vblanks to the millisecond */
+        kernel_vblank_tick();  /* the GPU's frame clock */

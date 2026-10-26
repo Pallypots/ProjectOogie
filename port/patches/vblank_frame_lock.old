@@ -1,0 +1,5 @@
+    now = (long long)GetTickCount64();
+    if (now < next_ms)
+        return;
+    next_ms = now + 16;                       /* ~60 Hz */
+    InterlockedIncrement(&g_vblank_total);

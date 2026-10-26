@@ -1,0 +1,19 @@
+    uint32_t start_routine   = STACK_ARG(9);
+    /* Project Oogie (KNOWN_ISSUES #61): argument 7 is CreateSuspended, and it
+     * was ignored: every worker started at once. XAPI's CreateThread creates
+     * suspended and resumes afterwards, and the game's own creator
+     * (0x001AD433) and Bink's (sub_0022F3D0) fill in what the thread uses
+     * between the two: Bink makes the worker's mutex and event after
+     * CreateThread, so a worker that ran early waited on handle 0xFFFFFFFF
+     * for good (gs1, under the guest CPU lock; without it, a race the
+     * timing usually hides). The host thread is now created suspended when
+     * asked, and NtResumeThread (ResumeThread) starts it.
+     * Off unless OOGIE_SUSPEND_NEW=1 (see below). */
+    {
+        /* Opt-in (OOGIE_SUSPEND_NEW=1) since 2026-10-20: correct by the
+         * kernel's contract, but soaks with it on went worse (ts1-ts3). */
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("OOGIE_SUSPEND_NEW"); on = e && *e == '1'; }
+        t_spawn_suspended = on && STACK_ARG(7) != 0;
+    }
+    /* In SPAWN mode there is no privileged "first call": every thread is real,

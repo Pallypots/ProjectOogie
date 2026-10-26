@@ -1,0 +1,2 @@
+static void clear_surface(uint32_t param)
+{

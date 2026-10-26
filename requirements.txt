@@ -1,0 +1,21 @@
+# Project Oogie - requirements
+#
+# TO PLAY
+#   - Windows 10 or 11, 64-bit
+#   - A graphics card with Direct3D 11 (feature level 10.0 or newer); integrated
+#     graphics works (tested on Intel Arc 140V)
+#   - About 4 GB free disk space (the game files are copied once)
+#   - Your own disc image (.iso) of The Nightmare Before Christmas:
+#     Oogie's Revenge, USA Xbox version (title ID 42560004).
+#     The port checks it on first start.
+#   - Optional: an Xbox controller, a PlayStation 5 DualSense or another
+#     SDL2-supported pad; keyboard and mouse also work
+#
+# TO BUILD FROM SOURCE
+#   - Visual Studio 2022 with the "Desktop development with C++" workload (MSVC x64)
+#   - CMake 3.20 or newer
+#   - Git
+#   - XboxRecomp v0.14.0 (commit eb0aa1d) in third_party/xboxrecomp
+#   - Python 3.10 or newer, with the packages below:
+#       pip install -r requirements.txt
+capstone>=5.0

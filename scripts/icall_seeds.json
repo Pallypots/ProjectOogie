@@ -1,0 +1,574 @@
+[
+ {
+  "start": "0x001D4320",
+  "source": "run1.log"
+ },
+ {
+  "start": "0x001D4B70",
+  "source": "run1.log"
+ },
+ {
+  "start": "0x001D59E0",
+  "source": "run1.log"
+ },
+ {
+  "start": "0x002580FC",
+  "source": "run4.log"
+ },
+ {
+  "start": "0x0025893A",
+  "source": "run4.log"
+ },
+ {
+  "start": "0x000791A0",
+  "source": "win_run8.err.log"
+ },
+ {
+  "start": "0x0025C900",
+  "source": "win_run17.err.log"
+ },
+ {
+  "start": "0x00239640",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x00237590",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0023AC00",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0023C020",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0023C7D0",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x001DA352",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x001DA5A6",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x001F5D6B",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0025905C",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0025BEAC",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0025C2E1",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0025D741",
+  "source": "orphan scan (code after end of function, library sections), session 2"
+ },
+ {
+  "start": "0x0008CFB0",
+  "source": "live14.err.log"
+ },
+ {
+  "start": "0x0001C460",
+  "source": "live23.err.log"
+ },
+ {
+  "start": "0x0006A2F3",
+  "source": "ch1play: switch table 0x6A308 case (door screen exit)"
+ },
+ {
+  "start": "0x0006A2F8",
+  "source": "ch1play.err.log: 1777 failed ICALLs on the Halloween door screen"
+ },
+ {
+  "start": "0x0006A2FD",
+  "source": "ch1play: switch table 0x6A308 case"
+ },
+ {
+  "start": "0x0006A302",
+  "source": "ch1play: switch table 0x6A308 case"
+ },
+ {
+  "start": "0x001CC29C",
+  "source": "ch1play.err.log"
+ },
+ {
+  "start": "0x000637D3",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000639F2",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063AA5",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063ACD",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063B22",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063B4A",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063BB5",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063C38",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063C82",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063D94",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063D98",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063E52",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063F4D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063F75",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063FCA",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00063FF2",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006405D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000640E0",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006412A",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006423C",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064240",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000642F2",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064382",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000643AA",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000643FF",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064427",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064492",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064515",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006455F",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00064671",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065012",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065141",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065163",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000651AE",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000651D1",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065219",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006523C",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000652B1",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065323",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065328",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0006532D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00065332",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00095C11",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00095C15",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00099919",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F0B6",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F126",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F164",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F199",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F1B0",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F205",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F247",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F2B4",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F48E",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F4DA",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F4E6",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FAF5",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FB75",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FB95",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FBE6",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FC60",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FCC1",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FD8E",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FDAC",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FE4A",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FE68",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FE95",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FEB3",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FEF0",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009FF92",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A0030",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A0076",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A0121",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A0230",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A05F2",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A089B",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000A08DD",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000AE447",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000AE4EC",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000AE524",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000AE55B",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000F287D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000F28AC",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000F28DE",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000F29A5",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x000F29E3",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010186D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x001019B3",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101A1C",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101A78",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101A88",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101AFA",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101BC6",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101BDC",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x00101BE0",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A406",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A45A",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A461",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A483",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4A4",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4AB",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4B2",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4CA",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4D1",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4D8",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A4DF",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A53D",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A585",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A58F",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0010A5CB",
+  "source": "scan_switch_tables (KNOWN_ISSUES #45)"
+ },
+ {
+  "start": "0x0009F0F0",
+  "source": "owner play.log 2026-10-19 20:53: 45 failed ICALLs, Chapter 3 (pumpkin bombs do not explode)"
+ },
+ {
+  "start": "0x0009FB40",
+  "source": "owner play.log 2026-10-19 20:53: 6 failed ICALLs, Chapter 3"
+ },
+ {
+  "start": "0x0010A420",
+  "source": "play.log"
+ },
+ {
+  "start": "0x00101910",
+  "source": "callback scan 2026-10-25 (mov [reg+disp], imm32 to an undetected function start)"
+ },
+ {
+  "start": "0x00120A90",
+  "source": "callback scan 2026-10-25 (mov [reg+disp], imm32 to an undetected function start)"
+ },
+ {
+  "start": "0x0015A550",
+  "source": "callback scan 2026-10-25 (mov [reg+disp], imm32 to an undetected function start)"
+ },
+ {
+  "start": "0x001677A0",
+  "source": "callback scan 2026-10-25 (mov [reg+disp], imm32 to an undetected function start)"
+ }
+]

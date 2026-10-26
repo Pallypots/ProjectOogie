@@ -1,0 +1,13 @@
+    s_gpu.texs[0].palette = 0;          /* ponytail: no palettised formats */
+    {
+        /* Project Oogie: palettised textures (SZ_I8_A8R8G8B8, 0x0B) need the
+         * CLUT the title set with SET_TEXTURE_PALETTE; without it every one
+         * decoded as unsupported and showed a white box. Take the palette of
+         * the stage that holds this texture now. */
+        int st;
+        if (saved.offset == tex->offset && saved.palette)
+            s_gpu.texs[0].palette = saved.palette;
+        for (st = 1; st < 4 && !s_gpu.texs[0].palette; st++)
+            if (s_gpu.texs[st].offset == tex->offset && s_gpu.texs[st].palette)
+                s_gpu.texs[0].palette = s_gpu.texs[st].palette;
+    }

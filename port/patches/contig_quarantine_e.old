@@ -1,0 +1,3 @@
+    contig_lock();
+    for (q = first; q < first + n; q += run) {
+        if (g_contig_used[q]) { run = 1; continue; }

@@ -1,0 +1,7 @@
+    {
+        int _locked = dispatch_lock_dpc(routine);   /* Project Oogie #43 */
+        int _irql = xbox_IrqlEnterInterrupt(2); fn(); xbox_IrqlLeaveInterrupt(_irql);
+        if (_locked) LeaveCriticalSection(&g_dispatch_lock);
+    }
+    return 1;
+}

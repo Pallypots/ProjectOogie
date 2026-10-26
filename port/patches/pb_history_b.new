@@ -1,0 +1,6 @@
+                        if (last_put && put > last_put) {
+                            oogie_pbh_add(last_put, put, *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_GET),
+                                          0, last_put, put);
+                            nv2a_pb_scan_segment(XBOX_CONTIG_BASE | (last_put & 0x0FFFFFFFu),
+                                                 XBOX_CONTIG_BASE | (put      & 0x0FFFFFFFu));
+                        } else if (last_put && put < last_put) {
