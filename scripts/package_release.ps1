@@ -16,6 +16,11 @@ Copy-Item (Join-Path $Root "bin\oogie_recomp.exe") (Join-Path $out "Project Oogi
 $pdb = Get-ChildItem (Join-Path $Root "port\build\Release") -Filter "oogie_recomp*.pdb" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($pdb) { Copy-Item $pdb.FullName (Join-Path $out "oogie_recomp.pdb") }
 Copy-Item (Join-Path $Root "bin\SDL2.dll") $out
+# Microsoft's HLSL compiler (Windows SDK redistributable): used instead of
+# Wine's under Proton / Steam Deck (port/src/pc_d3dc.c)
+$d3dc = Get-Item (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Redist\D3D\x64\d3dcompiler_47.dll") -ErrorAction SilentlyContinue
+if (-not $d3dc) { throw "d3dcompiler_47.dll not found in the Windows SDK (Windows Kits\10\Redist\D3D\x64)" }
+Copy-Item $d3dc.FullName $out
 Copy-Item (Join-Path $Root "assets\fonts\*") (Join-Path $out "assets\fonts")
 Copy-Item (Join-Path $Root "LICENSE") (Join-Path $out "LICENSE.txt")
 Copy-Item (Join-Path $Root "THIRD-PARTY-NOTICES.md") $out
@@ -52,6 +57,12 @@ FILES
 "@ | Set-Content (Join-Path $out "README.txt") -Encoding ascii
 $zip = Join-Path $Root ("dist\ProjectOogie-" + $(if ($Version) { $Version } else { Get-Date -Format "yyyyMMdd" }) + ".zip")
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path $out -DestinationPath $zip
+# Not Compress-Archive: Windows PowerShell 5.1 stores paths with backslashes
+# ("ProjectOogie\Project Oogie.exe"), which Linux and SteamOS unzip as single
+# files with backslashes in their names, so under Proton nothing could start
+# (GitHub issue #1, Steam Machine). Windows own tar writes standard "/" paths.
+Push-Location (Join-Path $Root "dist")
+& (Join-Path $env:SystemRoot "System32\tar.exe") -a -c -f $zip ProjectOogie
+Pop-Location
 $files = Get-ChildItem $out -Recurse -File
 "{0} files, {1:N1} MB unpacked; {2} ({3:N1} MB)" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1MB), $zip, ((Get-Item $zip).Length / 1MB)

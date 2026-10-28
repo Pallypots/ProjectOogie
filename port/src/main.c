@@ -387,6 +387,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Started on its own (a player double-clicking it), not by play.bat or a
      * test script: set up what play.bat does (pc_setup.c). */
     pc_setup_standalone();
+    {
+        /* Tests (0.2 weak-PC work): OOGIE_TEST_AFFINITY=<mask> runs the whole
+         * program on those logical processors only (0x30: two of this
+         * laptop's low-power cores), to stand in for a two-core PC. */
+        const char *a = getenv("OOGIE_TEST_AFFINITY");
+        DWORD_PTR m = a && *a ? (DWORD_PTR)_strtoui64(a, NULL, 0) : 0;
+        if (m && SetProcessAffinityMask(GetCurrentProcess(), m))
+            fprintf(stderr, "[TEST] process affinity 0x%llX\n", (unsigned long long)m);
+    }
     if (pc_setup_is_standalone())
         SetUnhandledExceptionFilter(oogie_unhandled);
     {
@@ -405,7 +414,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         /* The log goes through a pipe to its own writer thread, so a slow
          * disk never holds the game (port/src/pc_log.c, KNOWN_ISSUES #55). */
         extern void pc_log_start(void);
+        extern void pc_sysinfo_log(void);
         pc_log_start();
+        pc_sysinfo_log();               /* version, system, processor, memory (pc_sysinfo.c) */
     }
     {
         /* Out of Windows' efficiency mode (EcoQoS). On hybrid CPUs (the

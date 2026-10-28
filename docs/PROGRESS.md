@@ -335,3 +335,9 @@ See docs/IMPROVEMENT_PLAN.md.
 - Casino Clash (#72) fixed: deaf DirectSound voices stopped at once with a precise timer, and the voice-parameter writer no longer traps. Sweep sw12: 60.0 fps in all 24 chapters, 0 crashes; soaks dss1-2 clean. Next: graphics presets, then accessibility (IMPROVEMENT_PLAN.md).
 - Dev cycle 8: Graphics > Quality Preset (Low / Medium / High / Ultra) and battery-aware Auto resolution. Verified in the menu (pr1).
 - Dev cycle 9 (accessibility): Auto-Repeat Held Button (Controls) and Colour-Blind Filter (Graphics). Subtitle size and invincibility need the subtitle drawing and the health value found first.
+
+## 0.2 release candidate: 2026-10-28
+- New since 0.1: Proton startup fixes (#81), version number (title, F1 About, log), system details at the top of the log, widescreen door transition (#60), D3D vblank and KickOff busy-waits removed.
+- Verified: 24/24 chapters, two 15-minute combat soaks, the zip under Wine 10 (TEST_RESULTS v02, v02s1-2, v02zip).
+- Packaged: `dist/ProjectOogie-v0.2.zip`. Release notes: docs/RELEASE_NOTES_0.2.md. Drafts for GitHub #1 and Reddit: trailer/v02_replies.md (not in git).
+- Not done: commit, push, GitHub release, posts (waiting for the owner). Owner play test of 0.2 skipped by the owner's choice.

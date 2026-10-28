@@ -3,6 +3,9 @@
 ## Part of the released program
 - **XboxRecomp** (https://github.com/sp00nznet/xboxrecomp, v0.14.0, commit eb0aa1d): the static
   recompiler and runtime the port is built with. MIT License, Copyright (c) 2026 sp00nz.
+- **D3DCompiler_47** (`d3dcompiler_47.dll`, the HLSL shader compiler): Microsoft, redistributed
+  under the Windows SDK license (Redist\D3D). Shipped so that Proton and Wine use it instead of
+  their own compiler.
 - **SDL2** 2.30.9 (`SDL2.dll`, PlayStation, Switch and other controllers): zlib License,
   Copyright (C) 1997-2024 Sam Lantinga.
 - **Mountains of Christmas** font (`assets/fonts`, the settings menu): Apache License 2.0,

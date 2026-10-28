@@ -476,11 +476,13 @@ void pc_setup_standalone(void)
     }
     backup_saves();
     /* The log: logs\play.log, the last two sessions kept as play.1.log and
-     * play.2.log. Only when nothing receives the program's output already. */
+     * play.2.log. Always, when started on its own (0.2): it used to be skipped
+     * whenever something already received the output, and under Proton Steam
+     * always does (a pipe), so Steam Deck players had no log to send.
+     * OOGIE_LOG_STDERR=1 keeps the output where it is. */
     {
-        HANDLE e = GetStdHandle(STD_ERROR_HANDLE);
-        DWORD ty = (e && e != INVALID_HANDLE_VALUE) ? GetFileType(e) : FILE_TYPE_UNKNOWN;
-        if (ty != FILE_TYPE_DISK && ty != FILE_TYPE_PIPE) {
+        const char *keep = getenv("OOGIE_LOG_STDERR");
+        if (!(keep && *keep == '1')) {
             CreateDirectoryA("logs", NULL);
             MoveFileExA("logs\\play.1.log", "logs\\play.2.log", MOVEFILE_REPLACE_EXISTING);
             MoveFileExA("logs\\play.log", "logs\\play.1.log", MOVEFILE_REPLACE_EXISTING);

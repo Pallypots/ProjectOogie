@@ -105,9 +105,67 @@ extern ptrdiff_t g_xbox_mem_offset;
 extern volatile LONG g_gcpu_preempt;
 extern void guest_cpu_safepoint(void);
 extern OOGIE_TLS uint32_t g_fs_base;
+/* HLE renderer stage 0 (docs/D3D8_API_INVENTORY.md): OOGIE_D3D_CALLS=1 counts
+ * every direct call into the D3D library section (0x1D1B80-0x1E4AE8) and logs
+ * the 24 most called targets with calls per presented frame every 10 s. */
+#define OOGIE_D3D_LO 0x001D1B80u
+#define OOGIE_D3D_HI 0x001E4AE8u
+static int s_d3dc_on = -1;
+static volatile LONG s_d3dc_n[1024];
+static volatile LONG s_d3dc_va[1024];
+static volatile LONG s_d3dc_total;
+extern volatile long g_oogie_presents;
+static void d3d_calls_count(uint32_t va)
+{
+    uint32_t h = (va * 2654435761u) >> 22, i;
+    for (i = 0; i < 1024; i++, h = (h + 1) & 1023) {
+        LONG cur = s_d3dc_va[h];
+        if (!cur) cur = InterlockedCompareExchange(&s_d3dc_va[h], (LONG)va, 0), cur = cur ? cur : (LONG)va;
+        if ((uint32_t)cur == va) { InterlockedIncrement(&s_d3dc_n[h]); return; }
+    }
+}
+static void d3d_calls_report(void)
+{
+    static volatile LONG busy;
+    static DWORD last;
+    static long last_presents;
+    DWORD now = GetTickCount();
+    long frames;
+    LONG n[1024]; uint32_t va[1024];
+    int i, j, k, idx[24];
+    if (now - last < 10000 || InterlockedExchange(&busy, 1)) return;
+    last = now;
+    frames = g_oogie_presents - last_presents; last_presents = g_oogie_presents;
+    for (i = 0; i < 1024; i++) { va[i] = (uint32_t)s_d3dc_va[i]; n[i] = InterlockedExchange(&s_d3dc_n[i], 0); }
+    if (frames > 0) {
+        for (k = 0; k < 24; k++) {                   /* the 24 most called, by selection */
+            int best = -1;
+            for (i = 0; i < 1024; i++) {
+                if (!va[i] || !n[i]) continue;
+                for (j = 0; j < k && idx[j] != i; j++) ;
+                if (j < k) continue;
+                if (best < 0 || n[i] > n[best]) best = i;
+            }
+            if (best < 0) break;
+            idx[k] = best;
+        }
+        fprintf(stderr, "[D3DCALLS] %ld frames, calls per frame:", frames);
+        for (j = 0; j < k; j++)
+            fprintf(stderr, " %08X:%.1f", va[idx[j]], (double)n[idx[j]] / (double)frames);
+        fprintf(stderr, "\n");
+    }
+    InterlockedExchange(&busy, 0);
+}
+
 void recomp_call_profile_hit(uint32_t va)
 {
-    (void)va;
+    if (s_d3dc_on) {
+        if (s_d3dc_on < 0) { const char *e = getenv("OOGIE_D3D_CALLS"); s_d3dc_on = e && *e == '1'; }
+        if (s_d3dc_on && va >= OOGIE_D3D_LO && va < OOGIE_D3D_HI) {
+            d3d_calls_count(va);
+            if ((InterlockedIncrement(&s_d3dc_total) & 4095) == 0) d3d_calls_report();
+        }
+    }
     if (g_gcpu_preempt && g_fs_base
             && *(volatile uint8_t *)((uintptr_t)g_xbox_mem_offset + g_fs_base + 0x24) < 2)
         guest_cpu_safepoint();
@@ -2893,4 +2951,78 @@ void sub_001C9D48(void)
     }
     g_eax = 0;
     g_esp += 4;                         /* ret: the caller goes on, as if the method did nothing */
+}
+
+/* ── Oogie: D3D's vblank handler without the acknowledge spin (0.2) ───
+ *
+ * Verified (D3D.asm 0x1DB220..0x1DB2DC): sub_001DB220 (the vblank work, from
+ * the DPC sub_001DB9D0 and five other callers) ends by acknowledging the
+ * interrupt: "do { PCRTC_INTR_0 [0xFD600100] = 1 } while (PMC_INTR_0
+ * [0xFD000100] & 0x1000000)". On the NV2A the write clears the pending bit
+ * at once, so the loop runs once. Here the registers are memory held at zero
+ * by the GPU thread between command batches (xbox_Nv2aAckBusyBits), so the
+ * loop spun until that thread came round: 79% of the timer thread on a
+ * two-core test (wkprof, scripts/weak_pc_test.ps1), and on two cores the spin
+ * took the core the GPU thread needed, so it slowed what it waited for
+ * (Casino Clash on two low-power cores: 18.7 fps). The PCRTC bit of PMC_INTR
+ * is cleared as the handler starts, as the acknowledge would have left it
+ * by the time the loop reads it. OOGIE_VBLANK_SPIN=1: the original. */
+extern volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset);
+void sub_001DB220_enter(void)
+{
+    static int old = -1;
+    volatile uint32_t *pmc;
+    if (old < 0) { const char *e = getenv("OOGIE_VBLANK_SPIN"); old = e && *e == '1'; }
+    if (old) return;
+    pmc = xbox_Nv2aRegPtr(0x100);
+    if (pmc && (*pmc & 0x1000000u))
+        InterlockedAnd((volatile LONG *)pmc, ~(LONG)0x1000000);
+}
+
+/* ── Oogie: D3D KickOff without the flush-acknowledge spin (0.2) ──────
+ *
+ * Verified (D3D.asm 0x1D76F0..0x1D779F): sub_001D76F0 (KickOff, thiscall,
+ * device in ecx, no stack arguments) hands D3D's commands to the GPU. In the
+ * normal state ([dev+8] & 0x2000 clear): edx = [dev+8] & 4 ? [dev+0x770] :
+ * [dev+0]; regs = [[0x1E25E8]+0x1C28] (the NV2A at 0xFD000000); PFB
+ * 0x100410 |= 0x10000 and spin while that bit is set; then PUT
+ * ([[dev+0x1C20]+0x40]) = edx & 0x0FFFFFFF; then, while [0x1E2140] is set,
+ * sub_001D3C60 is called until it returns 0, and [dev+8] |= 0x2000.
+ *
+ * The 0x100410 bit is a flush request the hardware acknowledges at once.
+ * Here it is memory, cleared by the GPU thread between its sleeps and command
+ * batches (xbox_Nv2aAckBusyBits), so every KickOff waited for that thread to
+ * be scheduled. On a two-core test (exprof: Casino Clash on two low-power
+ * cores) the game thread spent 70% of its time in this spin while the GPU
+ * thread slept 90% of its own. The flush is acknowledged here, as the
+ * hardware would; everything else is as the game does it. The other path
+ * ([dev+8] & 0x2000) runs the original. OOGIE_KICK_SPIN=1: the original. */
+extern void sub_001D76F0_gen(void);
+extern void sub_001D3C60(void);
+void sub_001D76F0(void)
+{
+    static int old = -1;
+    uint32_t dev = g_ecx, flags, put, regs, esp0 = g_esp;
+    if (old < 0) { const char *e = getenv("OOGIE_KICK_SPIN"); old = e && *e == '1'; }
+    flags = OOGIE_MEM32(dev + 8);
+    if (old || (flags & 0x2000u)) { sub_001D76F0_gen(); return; }
+    put = (flags & 4u) ? OOGIE_MEM32(dev + 0x770) : OOGIE_MEM32(dev);
+    regs = OOGIE_MEM32(OOGIE_MEM32(0x001E25E8u) + 0x1C28u);
+    MemoryBarrier();                                    /* sfence */
+    OOGIE_MEM32(regs + 0x100410u) |= 0x10000u;          /* flush request ... */
+    OOGIE_MEM32(regs + 0x100410u) &= ~0x10000u;         /* ... acknowledged, as the hardware does */
+    g_ecx = OOGIE_MEM32(dev + 0x1C20u);
+    g_edx = put & 0x0FFFFFFFu;
+    OOGIE_MEM32(g_ecx + 0x40u) = g_edx;                 /* PUT: the GPU may run to here */
+    g_eax = OOGIE_MEM32(0x001E2140u);
+    if (g_eax) {
+        do {
+            g_esp = esp0 - 4;                           /* the original pushed esi */
+            g_esp -= 4;
+            OOGIE_MEM32(g_esp) = 0x001D7759u;
+            sub_001D3C60();
+        } while (g_eax);
+        OOGIE_MEM32(dev + 8) |= 0x2000u;
+    }
+    g_esp = esp0 + 4;                                   /* ret */
 }

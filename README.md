@@ -85,6 +85,14 @@ See [requirements.txt](requirements.txt) for what you need. In short: 64-bit Win
 
 Default keyboard: **WASD** move, **arrow keys** are A/B/X/Y (Down A, Right B, Left X, Up Y), **T F G H** the d-pad, **Enter** Start, **Backspace** Back. All of them can be changed in F1 > Keyboard.
 
+### Steam Deck, SteamOS and Linux (Proton), from version 0.2
+1. In **Desktop Mode**, download the release zip and extract it to a folder of your own (for example `~/Games/ProjectOogie`). Use the 0.2 zip or later: the 0.1 zip does not extract correctly on Linux.
+2. In Steam: *Add a Game* > *Add a Non-Steam Game*, choose `Project Oogie.exe`. Then in the game's *Properties* > *Compatibility*, tick *Force the use of a specific Steam Play compatibility tool* and choose **Proton Experimental** (or a recent Proton).
+3. Start it once **in Desktop Mode**: choose your disc image in the window that opens and let it copy the game files. After that, play in Game Mode as usual.
+4. If it does not start, please open an issue with `logs/play.log` from the game's folder, and a Proton log if you can (launch options: `PROTON_LOG=1 %command%`; the log is `steam-<number>.log` in your home folder).
+
+Tested under Wine 10 so far; Steam Deck reports are very welcome.
+
 ## Status (version 0.1)
 
 - The whole game loads and runs. Automated checks start every one of the 24 chapters and play it for three minutes, at 60 fps, with no crashes.

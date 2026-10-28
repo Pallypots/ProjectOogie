@@ -55,6 +55,8 @@
 #include <dxgi.h>
 #include <dxgi1_6.h>   /* IDXGIFactory6: pick the high-performance GPU */
 #include <d3dcompiler.h>
+#include "pc_d3dc.h"     /* D3DCompile from the shipped copy first (Proton) */
+#include "pc_version.h"
 #include <mmsystem.h>
 #include <psapi.h>
 #include <math.h>
@@ -906,7 +908,7 @@ static int init_device(void)
     if (g_pc.aspect == 1) r.right = (480 * scale * 16 + 8) / 9;   /* a 16:9 window */
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     s_hwnd = CreateWindowA("OogieD3D11",
-                           "The Nightmare Before Christmas: Oogie's Revenge (Project Oogie, D3D11)",
+                           "The Nightmare Before Christmas: Oogie's Revenge (Project Oogie " OOGIE_VERSION ")",
                            WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
     if (!s_hwnd) { fprintf(stderr, "[D3D11] CreateWindow failed\n"); return 0; }
@@ -3701,6 +3703,59 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
             if (y < y0) y0 = y;
             if (y > y1) y1 = y;
         }
+        {
+            /* OOGIE_2D_TRACE=1 (#60): large 2D batches, with their bounds
+             * and the last texture looked up, to tell the load transition's
+             * growing mask from menus and other large 2D art. */
+            static int tr = -1;
+            if (tr < 0) { const char *e = getenv("OOGIE_2D_TRACE"); tr = e && *e == '1'; }
+            if (tr && x1 - x0 >= 200.0f)
+                fprintf(stderr, "[2D] f=%u x %.1f..%.1f y %.1f..%.1f verts %u tex %08X\n",
+                        s_frame, x0, x1, y0, y1, b->nverts, s_last_tex_hash);
+        }
+        {
+            /* #60, found 2026-10-27 (door3, OOGIE_2D_TRACE): the load
+             * transition draws its tree in a growing box with four bars
+             * around it (an orange copy of the scene): top and bottom full
+             * width, left 0..w and right 640-w..640, full height, w
+             * shrinking to 0. Squeezed to 4:3 with the side bars stretched
+             * to the wide edges, a bar a few pixels wide became an orange
+             * band an eighth of the screen wide while the tree box should
+             * have filled the screen. While a frame shows such a pair of
+             * side bars, every 2D batch of the effect is drawn unsqueezed,
+             * as one picture stretched to the wide screen: the box reaches
+             * the real edges as the bars reach zero. A pair seen in the
+             * last frame or this one counts (the bars come after the box). */
+            static uint32_t s_iris_left_w_frame, s_iris_left_w_bits, s_iris_frame;
+            if (y0 <= 0.5f && y1 >= 479.5f && x1 - x0 < 320.0f) {
+                uint32_t w_bits;
+                if (x0 <= 0.5f) {                               /* left bar 0..w */
+                    memcpy(&w_bits, &x1, 4);
+                    s_iris_left_w_bits = w_bits; s_iris_left_w_frame = s_frame;
+                } else if (x1 >= 639.5f && s_iris_left_w_frame == s_frame) {
+                    float lw; memcpy(&lw, &s_iris_left_w_bits, 4);
+                    if (fabsf((640.0f - x0) - lw) < 1.0f)       /* the mirror image: a transition */
+                        s_iris_frame = s_frame;
+                }
+            }
+            /* door5 trace: in the middle of the transition (box x 176..464
+             * up to -192..832) the game draws no bars at all, only the box,
+             * always centred on the screen. Once the bars have been seen, a
+             * centred box keeps the effect going until it stops being drawn. */
+            if (s_iris_frame && s_frame - s_iris_frame <= 1 && b->nverts == 4
+                    && fabsf(x0 + x1 - 640.0f) < 2.0f && fabsf(y0 + y1 - 480.0f) < 2.0f
+                    && x1 - x0 >= 32.0f
+                    && !(fabsf(x1 - x0 - 640.0f) < 1.0f && fabsf(y1 - y0 - 480.0f) < 1.0f))   /* not a plain full-screen layer */
+                s_iris_frame = s_frame;
+            if (s_iris_frame && s_frame - s_iris_frame <= 1 && g_pc.aspect == 1) {
+                static int tr2 = -1;
+                if (tr2 < 0) { const char *e = getenv("OOGIE_2D_TRACE"); tr2 = e && *e == '1'; }
+                if (tr2)
+                    fprintf(stderr, "[2D] f=%u unsqueezed x %.1f..%.1f y %.1f..%.1f tex %08X\n",
+                            s_frame, x0, x1, y0, y1, s_last_tex_hash);
+                x0 = -1.0f;                                     /* skip the squeeze below */
+            }
+        }
         /* Off-screen edge masks (x -20..0, 640..660) and full-width
          * quads stay where they are. */
         if (x0 >= -0.5f && x1 <= 640.5f && !(x0 <= 2.0f && x1 >= 638.0f)) {
@@ -4470,7 +4525,7 @@ static void be_flip(void)
         if (now - t0 >= 2000) {
             char title[160];
             snprintf(title, sizeof title,
-                     "The Nightmare Before Christmas: Oogie's Revenge (Project Oogie, D3D11) | %.1f fps",
+                     "The Nightmare Before Christmas: Oogie's Revenge (Project Oogie " OOGIE_VERSION ") | %.1f fps",
                      (s_frame - f0) * 1000.0 / (double)(now - t0));
             SetWindowTextA(s_hwnd, title);
             g_oogie_worst_ms = (float)s_worst_cur;

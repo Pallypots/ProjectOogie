@@ -17,6 +17,8 @@
 #include <shellapi.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include "pc_d3dc.h"
+#include "pc_version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,6 +279,7 @@ static Item s_items[] = {
     MODSLOT(16), MODSLOT(17), MODSLOT(18), MODSLOT(19), MODSLOT(20), MODSLOT(21), MODSLOT(22), MODSLOT(23),
 #undef MODSLOT
 
+    { P_ABOUT, "Version", NULL, IT_INFO },
     { P_ABOUT, "Settings File", NULL, IT_INFO },
     { P_ABOUT, "Open Settings Folder", "Show settings.ini and the saves folder in Explorer.",
       IT_ACTION, NULL, NULL, 0, 0, NULL, NULL, NULL, 0, act_open_folder },
@@ -1207,6 +1210,10 @@ static const char *item_value(const Item *it, char *buf, size_t cap)
     if (it->type == IT_KEY || it->type == IT_PAD) {
         const char *v = pc_settings_get(it->sec, it->key);
         snprintf(buf, cap, "%s", v ? v : it->keydef);
+        return buf;
+    }
+    if (it->type == IT_INFO && !strcmp(it->label, "Version")) {
+        snprintf(buf, cap, "Project Oogie %s", OOGIE_VERSION);
         return buf;
     }
     if (it->type == IT_INFO && !strcmp(it->label, "Settings File")) {

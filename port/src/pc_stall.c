@@ -36,16 +36,34 @@ void pc_stall_note_flip_thread(void)
     s_flip_tid = GetCurrentThreadId();
 }
 
+/* Wine / Proton (Steam Deck, SteamOS, Linux): ntdll exports wine_get_version. */
+static int under_wine(void)
+{
+    static int w = -1;
+    if (w < 0) {
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        w = nt && GetProcAddress(nt, "wine_get_version") != NULL;
+    }
+    return w;
+}
+
 static int capture(DWORD tid, DWORD64 *pc, int max)
 {
-    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    HANDLE h;
     CONTEXT c;
     int n = 0;
+    /* 0.2, Wine test boot3: walking a suspended thread's stack faulted inside
+     * Wine's ntdll (null read at RtlVirtualUnwind's level) right after the
+     * first "[STALL] no frame for 200 ms" of the boot, and closed the game.
+     * Under Wine no stacks are taken (the stall lines still are), and the walk
+     * is guarded everywhere: a fault ends it, not the program. */
+    if (under_wine()) return 0;
+    h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
     if (!h) return 0;
     if (SuspendThread(h) == (DWORD)-1) { CloseHandle(h); return 0; }
     memset(&c, 0, sizeof c);
     c.ContextFlags = CONTEXT_FULL;
-    if (GetThreadContext(h, &c)) {
+    if (GetThreadContext(h, &c)) __try {
         while (n < max && c.Rip) {
             DWORD64 base = 0;
             PRUNTIME_FUNCTION f;
@@ -61,6 +79,8 @@ static int capture(DWORD tid, DWORD64 *pc, int max)
                 c.Rsp += 8;
             }
         }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        /* an unwind that faulted: keep the frames found so far */
     }
     ResumeThread(h);
     CloseHandle(h);
