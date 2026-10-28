@@ -481,6 +481,43 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
     printf("XBE loaded: %zu bytes\n", xbe_size);
 
+    {
+        /* GitHub #1 (0.2 on a Steam Machine, Proton / Wine 11): the low base
+         * addresses were taken, the runtime fell back to base 0x10000000, and
+         * two windows landed on host ranges Wine already used: RAM mirror 27
+         * and the tiled aperture at guest 0xF0000000 (error 487). The first
+         * write to the tiled aperture crashed (guest 0xF2E00000). XboxRecomp's
+         * RECOMP_WIN_PLACEHOLDER reserves the whole 4 GB guest window first,
+         * so nothing else can sit inside it. On by default under Wine, and on
+         * Windows when the console's own base 0x10000 is not free; otherwise
+         * the fixed base as before. OOGIE_MEM_PLACEHOLDER=0/1 forces it.
+         *
+         * OOGIE_TEST_BLOCK_LOW=1 (tests): holds the fixed bases and host
+         * 0x100000000 the way that machine had them, to reproduce #1 here. */
+        const char *f = getenv("OOGIE_MEM_PLACEHOLDER");
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        int wine = nt && GetProcAddress(nt, "wine_get_version") != NULL;
+        int low_free = 1, on;
+        if (getenv("OOGIE_TEST_BLOCK_LOW")) {
+            static const uintptr_t blk[] = { 0x10000, 0x800000, 0x1000000, 0x2000000, 0x100000000ull };
+            int i;
+            for (i = 0; i < 5; i++)
+                fprintf(stderr, "[TEST] address 0x%llX held: %s\n", (unsigned long long)blk[i],
+                        VirtualAlloc((LPVOID)blk[i], 0x10000, MEM_RESERVE, PAGE_NOACCESS) ? "yes" : "no");
+        }
+        {
+            void *p = VirtualAlloc((LPVOID)0x10000, 64u << 20, MEM_RESERVE, PAGE_NOACCESS);
+            if (p != (void *)0x10000) low_free = 0;
+            if (p) VirtualFree(p, 0, MEM_RELEASE);
+        }
+        on = f && *f ? *f == '1' : (wine || !low_free);
+        if (on && !getenv("RECOMP_WIN_PLACEHOLDER"))
+            _putenv("RECOMP_WIN_PLACEHOLDER=1");
+        fprintf(stderr, "[OOGIE] memory: %s (%s, console base %s)\n",
+                on ? "whole 4 GB guest window reserved first" : "console base address",
+                wine ? "Wine" : "Windows", low_free ? "free" : "taken");
+    }
+
     /* Step 2: Initialize Xbox memory layout */
     printf("Initializing Xbox memory layout...\n");
     if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
