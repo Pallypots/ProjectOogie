@@ -1911,7 +1911,15 @@ static volatile DWORD s_ds_poll_tid;
  * it completes stopped voices from the queue at [+0x4A0], sub_0020821C).
  * A forced voice stop waits for two (#78). */
 static volatile LONG s_ds_dpc_passes;
-void sub_002088F1_enter(void) { InterlockedIncrement(&s_ds_dpc_passes); }
+static int s_dsv;                       /* OOGIE_DSV_TRACE, set up further down */
+static int dsv_room(void);
+static double dsv_ms(void);
+void sub_002088F1_enter(void)
+{
+    InterlockedIncrement(&s_ds_dpc_passes);
+    if (s_dsv > 0 && dsv_room())
+        fprintf(stderr, "[DSV] %.1f dpc\n", dsv_ms());
+}
 
 static void oogie_raise_enter(int allow_isr)
 {
@@ -2004,7 +2012,27 @@ void sub_0020B669(void)
         DWORD me = GetCurrentThreadId();
         LARGE_INTEGER q0, qf;
         int mine = !old && s_ds_poll_tid == 0, cut = 0, lim;
+        unsigned char was = 0;
+        static int open = -1;
         if (mine) s_ds_poll_tid = me;           /* admit the APU's ISR meanwhile */
+        /* #47 (2026-10-28, owner: no Soul Robber sounds against Shadow Oogie;
+         * dv1 [DSV]): two voices went idle in the same APU frame. The front
+         * end traps on one (the other waits its turn) and stops producing
+         * frames until the ISR clears the trap, but the APU delivers no
+         * interrupt while any thread is at DISPATCH_LEVEL (apu_deliver_irq's
+         * hold-off, xbox_IrqlBlocksInterrupts) -- and this loop is. So the
+         * trap waited out the whole stop limit, 16-50 ms of no sound at all,
+         * then the stop was forced. On the console a device interrupt cuts
+         * into DISPATCH_LEVEL code; here the loop leaves the raised count
+         * while it polls (its own IRQL is put back afterwards, and the lock
+         * is still held: the ISR gets in through s_ds_poll_tid as before).
+         * OOGIE_DS_ISR_OPEN=0: hold interrupts off, as 0.2.1. */
+        if (open < 0) { const char *e = getenv("OOGIE_DS_ISR_OPEN"); open = !(e && *e == '0'); }
+        if (mine && open && g_fs_base) {
+            /* the level as the guest sees it (fs:[0x24], kept by irql_publish) */
+            was = *(volatile uint8_t *)((uintptr_t)g_xbox_mem_offset + g_fs_base + 0x24);
+            if (was >= 2) xbox_KfLowerIrql(0); else was = 0;
+        }
         if (s_ds_stop_ms < 0) {
             const char *e = getenv("OOGIE_DS_STOP_MS");
             s_ds_stop_ms = e && *e ? atoi(e) : 50;
@@ -2060,6 +2088,7 @@ void sub_0020B669(void)
             if (!old && (OOGIE_MEM16(v + 0x12) & 0x8000))
                 oogie_yield();
         }
+        if (was) xbox_KfRaiseIrql(was);
         if (mine) s_ds_poll_tid = 0;
     }
     g_ecx = v;
@@ -2791,6 +2820,8 @@ void sub_00040950_enter(void)
         const char *e = getenv("OOGIE_START_CHAPTER");
         target = e && *e ? atoi(e) : 0;
     }
+    { static int st; const char *s = getenv("OOGIE_SELFTEST_JT");
+      if (!st && s && *s == '1') { void deflect_selftest_run(void); st = 1; deflect_selftest_run(); } }
     if (target >= 2 && target <= 24 && !done && OOGIE_MEM32(g_esp + 4) == 1u) {
         done = 1;
         OOGIE_MEM32(g_esp + 4) = (uint32_t)target;
@@ -3025,4 +3056,610 @@ void sub_001D76F0(void)
         OOGIE_MEM32(dev + 8) |= 0x2000u;
     }
     g_esp = esp0 + 4;                                   /* ret */
+}
+
+/* ── Oogie: XACT call trace (GitHub #1 / KNOWN_ISSUES #47, 2026-10-28) ──
+ *
+ * Voice lines that do not play (results-screen announcer, Mr. Hyde's save
+ * talk). Every XACT API entry point the game calls (the wrappers that take
+ * the XACT lock, 0x22239E..0x223FCE, found from the calls in text) runs the
+ * original and, with OOGIE_XACT_TRACE=1, logs the caller, the first arguments
+ * and the result when the result is a failure (top bit set); =2 logs every
+ * call. Off by default: one getenv, then nothing. */
+static int dsv_on(void);
+static double dsv_ms(void);
+static void dst_open(void);
+static int s_dst;                       /* OOGIE_DS_TRACE, set up further down */
+
+static int s_xt = -1;
+static void xact_trace(uint32_t fn, int nargs, void (*gen)(void))
+{
+    uint32_t ret, a[5] = { 0, 0, 0, 0, 0 };
+    int k;
+    if (s_xt < 0) { const char *e = getenv("OOGIE_XACT_TRACE"); s_xt = e && *e ? atoi(e) : 0; }
+    if (!s_xt && s_dst <= 0) { gen(); return; }
+    ret = OOGIE_MEM32(g_esp);
+    for (k = 0; k < 5 && k < nargs; k++) a[k] = OOGIE_MEM32(g_esp + 4u + 4u * (uint32_t)k);
+    if ((fn == 0x002226C0u || fn == 0x002226F3u) && a[0] == OOGIE_MEM32(0x0040C86Cu))
+        dst_open();                                  /* OOGIE_DS_TRACE window */
+    gen();
+    if (!s_xt) return;
+    /* =1: failures, but not GetNotification's E_FAIL ("nothing yet"), which
+     * the game polls for every playing cue every frame */
+    if (s_xt >= 2 || ((g_eax & 0x80000000u) && fn != 0x00222573u))
+        fprintf(stderr, "[XACT] %lu %08X from %08X (%08X %08X %08X %08X %08X) -> %08X\n",
+                (unsigned long)GetTickCount(), fn, ret, a[0], a[1], a[2], a[3], a[4], g_eax);
+    /* #47: the streamed-cue slots' traffic, with the notification that ends a
+     * cue (descriptor at slot+0x2C, result at a[2]) and the cue each Play
+     * returns ([a[2]]); times on the [DSV] clock. */
+    if (s_xt >= 1 && (fn == 0x002226F3u || fn == 0x00222726u || (fn == 0x00222573u && ret == 0x001ACD72u && !(g_eax & 0x80000000u)))) {
+        dsv_on();
+        if (fn == 0x00222573u)
+            fprintf(stderr, "[XSN] %.1f notify desc %08X: %08X %08X %08X %08X %08X | got %08X %08X %08X %08X %08X %08X %08X %08X\n",
+                    dsv_ms(), a[1], OOGIE_MEM32(a[1]), OOGIE_MEM32(a[1] + 4), OOGIE_MEM32(a[1] + 8), OOGIE_MEM32(a[1] + 12), OOGIE_MEM32(a[1] + 16),
+                    OOGIE_MEM32(a[2]), OOGIE_MEM32(a[2] + 4), OOGIE_MEM32(a[2] + 8), OOGIE_MEM32(a[2] + 12),
+                    OOGIE_MEM32(a[2] + 16), OOGIE_MEM32(a[2] + 20), OOGIE_MEM32(a[2] + 24), OOGIE_MEM32(a[2] + 28));
+        else if (fn == 0x002226F3u)
+            fprintf(stderr, "[XSN] %.1f play bank %08X cue %08X -> %08X\n", dsv_ms(), a[0], OOGIE_MEM32(a[2]), g_eax);
+        else
+            fprintf(stderr, "[XSN] %.1f stop bank %08X index %d flags %X cue %08X from %08X -> %08X\n",
+                    dsv_ms(), a[0], (int)a[1], a[2], a[3], ret, g_eax);
+    }
+    {
+        /* Once a second: the game's four streamed-cue slots (0x40E358, 0x70
+         * each: [+0] cue id or -1, [+4] kind 0 music 1 voice 2 film, [+0x24]
+         * request key) and the eleven requests (0x40C880, 0x3C each: [+0] id,
+         * [+4] kind, [+8] key, [+0x10] done flag). */
+        static DWORD last;
+        DWORD now = GetTickCount();
+        if (now - last >= 1000) {
+            uint32_t i;
+            last = now;
+            fprintf(stderr, "[XSLOT] %lu", (unsigned long)now);
+            for (i = 0; i < 4; i++) {
+                uint32_t s = 0x0040E358u + i * 0x70u;
+                fprintf(stderr, " | %d k%d key%d", (int)OOGIE_MEM32(s), (int)OOGIE_MEM32(s + 4), (int)OOGIE_MEM32(s + 0x24));
+            }
+            fprintf(stderr, " ||");
+            for (i = 0; i < 11; i++) {
+                uint32_t r = 0x0040C880u + i * 0x3Cu;
+                if (OOGIE_MEM32(r) != 0xFFFFFFFFu)
+                    fprintf(stderr, " %d/%d/%d/%d", (int)OOGIE_MEM32(r), (int)OOGIE_MEM32(r + 4),
+                            (int)OOGIE_MEM32(r + 8), OOGIE_MEM8(r + 0x10));
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+}
+extern void sub_0022239E_gen(void);
+void sub_0022239E(void) { xact_trace(0x0022239Eu, 3, sub_0022239E_gen); }
+extern void sub_002223DD_gen(void);
+void sub_002223DD(void) { xact_trace(0x002223DDu, 4, sub_002223DD_gen); }
+extern void sub_00222420_gen(void);
+void sub_00222420(void) { xact_trace(0x00222420u, 4, sub_00222420_gen); }
+extern void sub_00222463_gen(void);
+void sub_00222463(void) { xact_trace(0x00222463u, 3, sub_00222463_gen); }
+extern void sub_002224A2_gen(void);
+void sub_002224A2(void) { xact_trace(0x002224A2u, 2, sub_002224A2_gen); }
+extern void sub_002224DD_gen(void);
+void sub_002224DD(void) { xact_trace(0x002224DDu, 3, sub_002224DD_gen); }
+extern void sub_002224FD_gen(void);
+void sub_002224FD(void) { xact_trace(0x002224FDu, 2, sub_002224FD_gen); }
+extern void sub_00222538_gen(void);
+void sub_00222538(void) { xact_trace(0x00222538u, 2, sub_00222538_gen); }
+extern void sub_00222573_gen(void);
+void sub_00222573(void) { xact_trace(0x00222573u, 3, sub_00222573_gen); }
+extern void sub_002225B2_gen(void);
+void sub_002225B2(void) { xact_trace(0x002225B2u, 2, sub_002225B2_gen); }
+extern void sub_002225ED_gen(void);
+void sub_002225ED(void) { xact_trace(0x002225EDu, 2, sub_002225ED_gen); }
+extern void sub_00222625_gen(void);
+void sub_00222625(void) { xact_trace(0x00222625u, 2, sub_00222625_gen); }
+extern void sub_00222662_gen(void);
+void sub_00222662(void) { xact_trace(0x00222662u, 1, sub_00222662_gen); }
+extern void sub_0022268D_gen(void);
+void sub_0022268D(void) { xact_trace(0x0022268Du, 3, sub_0022268D_gen); }
+extern void sub_002226C0_gen(void);
+void sub_002226C0(void) { xact_trace(0x002226C0u, 3, sub_002226C0_gen); }
+extern void sub_002226F3_gen(void);
+void sub_002226F3(void) { xact_trace(0x002226F3u, 3, sub_002226F3_gen); }
+extern void sub_00222726_gen(void);
+void sub_00222726(void) { xact_trace(0x00222726u, 4, sub_00222726_gen); }
+extern void sub_0022275D_gen(void);
+void sub_0022275D(void) { xact_trace(0x0022275Du, 3, sub_0022275D_gen); }
+extern void sub_00222795_gen(void);
+void sub_00222795(void) { xact_trace(0x00222795u, 5, sub_00222795_gen); }
+extern void sub_00223FCE_gen(void);
+void sub_00223FCE(void) { xact_trace(0x00223FCEu, 2, sub_00223FCE_gen); }
+
+/* ── Oogie: a streamed cue the game drops (GitHub #1, KNOWN_ISSUES #47) ──
+ *
+ * Verified (text 0x1ABD10..0x1ABD52): music, voice lines and film sound are
+ * streamed through four slots at 0x40E358 (0x70 bytes each, [+0] cue id or
+ * -1). sub_001ABD10 starts the request whose kind is in [0x40E348] (0 music,
+ * id [0x365158]; 1 voice, id [0x36515C], names at 0x338858; 2 film, id
+ * [0x365160], names at 0x33AE40) in the first free slot, and when no slot is
+ * free it returns without playing anything and without retrying. A voice line
+ * dropped that way is a line with no voice. This logs each such drop with the
+ * slots' contents; always on (it is rare and is the evidence for #47). */
+void sub_001ABD10_enter(void)
+{
+    static volatile LONG n;
+    uint32_t kind = OOGIE_MEM32(0x0040E348u), music = OOGIE_MEM32(0x00365158u), id, i;
+    char name[20];
+    for (i = 0; i < 4; i++) {
+        uint32_t s = OOGIE_MEM32(0x0040E358u + i * 0x70u);
+        if (kind == 0 && s == music && music < 0x2F) return;     /* that music is already on */
+        if (s == 0xFFFFFFFFu) return;                            /* a free slot */
+    }
+    if (InterlockedIncrement(&n) > 200) return;
+    id = kind == 1 ? OOGIE_MEM32(0x0036515Cu) : kind == 2 ? OOGIE_MEM32(0x00365160u) : music;
+    name[0] = 0;
+    if ((kind == 1 || kind == 2) && id < 2000) {
+        uint32_t base = (kind == 1 ? 0x00338858u : 0x0033AE40u) + id * 20u;
+        for (i = 0; i < 19 && (name[i] = (char)OOGIE_MEM8(base + i)) != 0; i++) ;
+        name[19] = 0;
+    }
+    fprintf(stderr, "[VOICE] streamed cue dropped, all 4 slots busy: kind %u id %u %s (slots %d %d %d %d, kinds %u %u %u %u)\n",
+            kind, id, name,
+            (int)OOGIE_MEM32(0x0040E358u), (int)OOGIE_MEM32(0x0040E3C8u), (int)OOGIE_MEM32(0x0040E438u), (int)OOGIE_MEM32(0x0040E4A8u),
+            OOGIE_MEM32(0x0040E35Cu), OOGIE_MEM32(0x0040E3CCu), OOGIE_MEM32(0x0040E43Cu), OOGIE_MEM32(0x0040E4ACu));
+    fflush(stderr);
+}
+/* ── Oogie: deflect switch marker (GitHub #2) ──
+ *
+ * sub_000A0B0B ends in a jump-table switch (table 0x000A0F84, index bytes
+ * at 0x000A0FA0) on the projectile-hit path. Its case targets were never
+ * seeded, so the port crashed with "ICALL Failed to resolve VA 0x000A0B29".
+ * They and 13 sibling targets in 0x000A00AA..0x000A0BBB are seeded now
+ * (scripts/icall_seeds.json); this logs each switch value the first time
+ * it is seen, so a test run shows the path was taken. */
+/* OOGIE_SELFTEST_JT=1: at New Game, look up every repaired switch target the
+ * same way RECOMP_ITAIL does and log any that would still fail. */
+recomp_func_t recomp_lookup(uint32_t xbox_va);
+void deflect_selftest_run(void)
+{
+    static const uint32_t t[] = { 0x000A00C8u, 0x000A00E5u, 0x000A0102u, 0x000A0315u, 0x000A031Fu,
+        0x000A034Cu, 0x000A0555u, 0x000A0584u, 0x000A0605u, 0x000A09DCu, 0x000A09E6u, 0x000A0A99u,
+        0x000A0B29u, 0x000A0B46u, 0x000A0B63u, 0x000A0B7Eu, 0x000A0B95u, 0x000A0BBBu, 0x000A0BCEu };
+    int i, bad = 0;
+    for (i = 0; i < (int)(sizeof t / sizeof t[0]); i++)
+        if (!recomp_lookup_manual(t[i]) && !recomp_lookup(t[i])) {
+            fprintf(stderr, "[SELFTEST] switch target 0x%08X: NOT resolved\n", t[i]); bad++;
+        }
+    fprintf(stderr, "[SELFTEST] deflect switch targets: %d of %d resolved\n", (int)(sizeof t / sizeof t[0]) - bad, (int)(sizeof t / sizeof t[0]));
+    fflush(stderr);
+}
+void sub_000A0B0B_enter(void)
+{
+    static volatile LONG seen[64];
+    uint32_t v = OOGIE_MEM32(OOGIE_MEM32(g_esp + 0x38));
+    if (v >= 64 || InterlockedExchange(&seen[v], 1)) return;
+    fprintf(stderr, "[SWITCH] 0x000A0B0B value %u (first time)\n", v);
+    fflush(stderr);
+}
+/* ── Oogie: voice-list tracer (KNOWN_ISSUES #47, OOGIE_DSV_TRACE=1) ──
+ *
+ * Lost sounds (owner 2026-10-28: Mr. Hyde's middle lines, the results
+ * announcer, the Soul Robber against Shadow Oogie) came with forced voice
+ * stops in play.log and no stream slot drop. This logs, in one timeline:
+ * the APU's three voice lists as a host thread sees them every 1 ms (a
+ * handle linked "+", unlinked "-", switched off "off", on "on"); every
+ * DirectSound voice removal sub_0020A73C (src 1 = the idle-voice interrupt
+ * via sub_00208416, 0 = the forced stop sub_0020A918); every idle-voice trap
+ * the interrupt handles (sub_00208416) and every forced stop. A handle that
+ * leaves a list with no removal logged, or a trap for a handle that has
+ * started a new sound, is the evidence. Off by default. */
+uint8_t *mcpx_apu_phys(uint64_t addr);
+static int s_dsv = -1;
+static volatile LONG s_dsv_lines;
+static LARGE_INTEGER s_dsv_q0, s_dsv_qf;
+static int dsv_on(void)
+{
+    if (s_dsv < 0) {
+        const char *e = getenv("OOGIE_DSV_TRACE");
+        QueryPerformanceFrequency(&s_dsv_qf);
+        QueryPerformanceCounter(&s_dsv_q0);
+        s_dsv = e && *e == '1';
+    }
+    return s_dsv;
+}
+static double dsv_ms(void)
+{
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return (double)(q.QuadPart - s_dsv_q0.QuadPart) * 1000.0 / (double)s_dsv_qf.QuadPart;
+}
+static int dsv_room(void) { return InterlockedIncrement(&s_dsv_lines) <= 200000; }
+static DWORD WINAPI dsv_thread(LPVOID p)
+{
+    static uint8_t inl[256], act[256];
+    static const uint32_t tops[3] = { 0x2054, 0x2060, 0x206C };   /* TVL2D, TVL3D, TVLMP */
+    (void)p;
+    for (;;) {
+        uint8_t now_l[256], now_a[256];
+        uint32_t vp, l, h, k;
+        Sleep(1);
+        if (!g_apu_state) continue;
+        vp = (uint32_t)mcpx_apu_mmio_read(g_apu_state, 0x202C, 4);   /* VPVADDR */
+        if (!vp) continue;
+        memset(now_l, 0, sizeof now_l);
+        memset(now_a, 0, sizeof now_a);
+        for (l = 0; l < 3; l++) {
+            h = (uint32_t)mcpx_apu_mmio_read(g_apu_state, tops[l], 4) & 0xFFFFu;
+            for (k = 0; h != 0xFFFFu && k < 256; k++) {
+                uint8_t *v;
+                if (h >= 256) { if (dsv_room()) fprintf(stderr, "[DSV] %.1f list %u: bad handle %u\n", dsv_ms(), l, h); break; }
+                if (now_l[h]) { if (dsv_room()) fprintf(stderr, "[DSV] %.1f list %u: handle %u twice (loop)\n", dsv_ms(), l, h); break; }
+                now_l[h] = (uint8_t)(l + 1);
+                v = mcpx_apu_phys(vp + h * 0x80u);
+                now_a[h] = (uint8_t)((*(volatile uint32_t *)(v + 0x54) >> 21) & 1);
+                h = *(volatile uint32_t *)(v + 0x7C) & 0xFFFFu;
+            }
+        }
+        for (h = 0; h < 256; h++) {
+            if (now_l[h] != inl[h] && dsv_room())
+                fprintf(stderr, now_l[h] ? "[DSV] %.1f +%u list %u\n" : "[DSV] %.1f -%u list %u\n",
+                        dsv_ms(), h, (now_l[h] ? now_l[h] : inl[h]) - 1u);
+            else if (now_l[h] && now_a[h] != act[h] && dsv_room())
+                fprintf(stderr, "[DSV] %.1f %s %u\n", dsv_ms(), now_a[h] ? "on" : "off", h);
+            inl[h] = now_l[h];
+            act[h] = now_a[h];
+        }
+    }
+}
+static void dsv_start(void)
+{
+    static volatile LONG started;
+    if (dsv_on() && !InterlockedExchange(&started, 1)) {
+        CloseHandle(CreateThread(NULL, 0, dsv_thread, NULL, 0, NULL));
+        fprintf(stderr, "[DSV] tracer on\n");
+    }
+}
+void sub_0020A73C_enter(void)
+{
+    uint32_t o = g_ecx, n, i;
+    char hs[48];
+    int at = 0;
+    dsv_start();
+    if (!s_dsv || !dsv_room()) return;
+    n = OOGIE_MEM8(o + 0x64);
+    hs[0] = 0;
+    for (i = 0; i < n && i < 6; i++)
+        at += snprintf(hs + at, sizeof hs - (size_t)at, "%s%u", i ? "," : "", (unsigned)OOGIE_MEM16(o + 0x0C + 2 * i));
+    fprintf(stderr, "[DSV] %.1f remove obj %08X handle %s src %u list %u state %04X\n", dsv_ms(), o, hs,
+            OOGIE_MEM32(g_esp + 4), (unsigned)OOGIE_MEM8(o + 0x65), (unsigned)OOGIE_MEM16(o + 0x12));
+}
+void sub_00208416_enter(void)
+{
+    dsv_start();
+    if (s_dsv && dsv_room())
+        fprintf(stderr, "[DSV] %.1f trap %u\n", dsv_ms(), OOGIE_MEM32(g_esp + 4));
+}
+void sub_0020A918_enter(void)
+{
+    dsv_start();
+    if (s_dsv && dsv_room())
+        fprintf(stderr, "[DSV] %.1f forced obj %08X state %04X\n", dsv_ms(), g_ecx, (unsigned)OOGIE_MEM16(g_ecx + 0x12));
+}
+
+/* ── Oogie: DirectSound calls made by XACT, around a voice line (#47) ──
+ *
+ * OOGIE_DS_TRACE=1: every call XACT makes into DirectSound (the 52 targets of
+ * XACTENG's direct calls into the DSOUND section) is logged with its caller,
+ * first four arguments and result, but only within 100 ms after the game
+ * prepares or plays a cue in the voice bank [0x40C86C]: enough to set a line
+ * that plays beside one that XACT ends at once. Off by default. */
+static int s_dst = -1;
+static LARGE_INTEGER s_dst_until;
+static void dst_open(void)
+{
+    LARGE_INTEGER now, f;
+    if (s_dst < 0) { const char *e = getenv("OOGIE_DS_TRACE"); s_dst = e && *e == '1'; }
+    if (!s_dst) return;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&f);
+    s_dst_until.QuadPart = now.QuadPart + f.QuadPart / 10;
+}
+static void ds_trace(uint32_t fn, void (*gen)(void))
+{
+    uint32_t ret, a0, a1, a2, a3, up;
+    LARGE_INTEGER now;
+    if (s_dst <= 0) { gen(); return; }
+    QueryPerformanceCounter(&now);
+    if (now.QuadPart > s_dst_until.QuadPart) { gen(); return; }
+    ret = OOGIE_MEM32(g_esp);
+    a0 = OOGIE_MEM32(g_esp + 4); a1 = OOGIE_MEM32(g_esp + 8); a2 = OOGIE_MEM32(g_esp + 12); a3 = OOGIE_MEM32(g_esp + 16);
+    /* the stream stop from sub_0022571F: also its caller (its frame above
+     * the 4 arguments: edi, esi, local, ebp, return address) */
+    up = (fn == 0x00205735u && ret == 0x00225768u) ? OOGIE_MEM32(g_esp + 36) : 0;
+    gen();
+    dsv_on();
+    if (dsv_room())
+        fprintf(stderr, "[DST] %.1f %08X from %08X (%08X %08X %08X %08X) -> %08X caller %08X\n", dsv_ms(), fn, ret, a0, a1, a2, a3, g_eax, up);
+}
+extern void sub_00203D21_gen(void);
+void sub_00203D21(void) { ds_trace(0x00203D21u, sub_00203D21_gen); }
+extern void sub_00203D3C_gen(void);
+void sub_00203D3C(void) { ds_trace(0x00203D3Cu, sub_00203D3C_gen); }
+extern void sub_00203D71_gen(void);
+void sub_00203D71(void) { ds_trace(0x00203D71u, sub_00203D71_gen); }
+extern void sub_00203DBB_gen(void);
+void sub_00203DBB(void) { ds_trace(0x00203DBBu, sub_00203DBB_gen); }
+extern void sub_00203DC0_gen(void);
+void sub_00203DC0(void) { ds_trace(0x00203DC0u, sub_00203DC0_gen); }
+extern void sub_00205491_gen(void);
+void sub_00205491(void) { ds_trace(0x00205491u, sub_00205491_gen); }
+extern void sub_002054AD_gen(void);
+void sub_002054AD(void) { ds_trace(0x002054ADu, sub_002054AD_gen); }
+extern void sub_002054CD_gen(void);
+void sub_002054CD(void) { ds_trace(0x002054CDu, sub_002054CD_gen); }
+extern void sub_002054ED_gen(void);
+void sub_002054ED(void) { ds_trace(0x002054EDu, sub_002054ED_gen); }
+extern void sub_00205509_gen(void);
+void sub_00205509(void) { ds_trace(0x00205509u, sub_00205509_gen); }
+extern void sub_00205525_gen(void);
+void sub_00205525(void) { ds_trace(0x00205525u, sub_00205525_gen); }
+extern void sub_00205541_gen(void);
+void sub_00205541(void) { ds_trace(0x00205541u, sub_00205541_gen); }
+extern void sub_0020555D_gen(void);
+void sub_0020555D(void) { ds_trace(0x0020555Du, sub_0020555D_gen); }
+extern void sub_00205579_gen(void);
+void sub_00205579(void) { ds_trace(0x00205579u, sub_00205579_gen); }
+extern void sub_00205595_gen(void);
+void sub_00205595(void) { ds_trace(0x00205595u, sub_00205595_gen); }
+extern void sub_002055B1_gen(void);
+void sub_002055B1(void) { ds_trace(0x002055B1u, sub_002055B1_gen); }
+extern void sub_002055D5_gen(void);
+void sub_002055D5(void) { ds_trace(0x002055D5u, sub_002055D5_gen); }
+extern void sub_002055ED_gen(void);
+void sub_002055ED(void) { ds_trace(0x002055EDu, sub_002055ED_gen); }
+extern void sub_00205611_gen(void);
+void sub_00205611(void) { ds_trace(0x00205611u, sub_00205611_gen); }
+extern void sub_00205631_gen(void);
+void sub_00205631(void) { ds_trace(0x00205631u, sub_00205631_gen); }
+extern void sub_0020566D_gen(void);
+void sub_0020566D(void) { ds_trace(0x0020566Du, sub_0020566D_gen); }
+extern void sub_002056B9_gen(void);
+void sub_002056B9(void) { ds_trace(0x002056B9u, sub_002056B9_gen); }
+extern void sub_002056D5_gen(void);
+void sub_002056D5(void) { ds_trace(0x002056D5u, sub_002056D5_gen); }
+extern void sub_002056F1_gen(void);
+void sub_002056F1(void) { ds_trace(0x002056F1u, sub_002056F1_gen); }
+extern void sub_0020570D_gen(void);
+void sub_0020570D(void) { ds_trace(0x0020570Du, sub_0020570D_gen); }
+extern void sub_00205712_gen(void);
+void sub_00205712(void) { ds_trace(0x00205712u, sub_00205712_gen); }
+extern void sub_00205717_gen(void);
+void sub_00205717(void) { ds_trace(0x00205717u, sub_00205717_gen); }
+extern void sub_0020571C_gen(void);
+void sub_0020571C(void) { ds_trace(0x0020571Cu, sub_0020571C_gen); }
+extern void sub_00205721_gen(void);
+void sub_00205721(void) { ds_trace(0x00205721u, sub_00205721_gen); }
+extern void sub_00205726_gen(void);
+void sub_00205726(void) { ds_trace(0x00205726u, sub_00205726_gen); }
+extern void sub_0020572B_gen(void);
+void sub_0020572B(void) { ds_trace(0x0020572Bu, sub_0020572B_gen); }
+extern void sub_00205730_gen(void);
+void sub_00205730(void) { ds_trace(0x00205730u, sub_00205730_gen); }
+extern void sub_00205735_gen(void);
+void sub_00205735(void) { ds_trace(0x00205735u, sub_00205735_gen); }
+extern void sub_0020574D_gen(void);
+void sub_0020574D(void) { ds_trace(0x0020574Du, sub_0020574D_gen); }
+extern void sub_00205752_gen(void);
+void sub_00205752(void) { ds_trace(0x00205752u, sub_00205752_gen); }
+extern void sub_00205757_gen(void);
+void sub_00205757(void) { ds_trace(0x00205757u, sub_00205757_gen); }
+extern void sub_0020575C_gen(void);
+void sub_0020575C(void) { ds_trace(0x0020575Cu, sub_0020575C_gen); }
+extern void sub_00205765_gen(void);
+void sub_00205765(void) { ds_trace(0x00205765u, sub_00205765_gen); }
+extern void sub_00205F56_gen(void);
+void sub_00205F56(void) { ds_trace(0x00205F56u, sub_00205F56_gen); }
+extern void sub_00205F72_gen(void);
+void sub_00205F72(void) { ds_trace(0x00205F72u, sub_00205F72_gen); }
+extern void sub_00205F8E_gen(void);
+void sub_00205F8E(void) { ds_trace(0x00205F8Eu, sub_00205F8E_gen); }
+extern void sub_00205FAE_gen(void);
+void sub_00205FAE(void) { ds_trace(0x00205FAEu, sub_00205FAE_gen); }
+extern void sub_00205FB3_gen(void);
+void sub_00205FB3(void) { ds_trace(0x00205FB3u, sub_00205FB3_gen); }
+extern void sub_002065D7_gen(void);
+void sub_002065D7(void) { ds_trace(0x002065D7u, sub_002065D7_gen); }
+extern void sub_002065F3_gen(void);
+void sub_002065F3(void) { ds_trace(0x002065F3u, sub_002065F3_gen); }
+extern void sub_00206613_gen(void);
+void sub_00206613(void) { ds_trace(0x00206613u, sub_00206613_gen); }
+extern void sub_00206618_gen(void);
+void sub_00206618(void) { ds_trace(0x00206618u, sub_00206618_gen); }
+extern void sub_00206AF4_gen(void);
+void sub_00206AF4(void) { ds_trace(0x00206AF4u, sub_00206AF4_gen); }
+extern void sub_00206D5C_gen(void);
+void sub_00206D5C(void) { ds_trace(0x00206D5Cu, sub_00206D5C_gen); }
+extern void sub_00206D80_gen(void);
+void sub_00206D80(void) { ds_trace(0x00206D80u, sub_00206D80_gen); }
+extern void sub_00206DA4_gen(void);
+void sub_00206DA4(void) { ds_trace(0x00206DA4u, sub_00206DA4_gen); }
+extern void sub_00206F6A_gen(void);
+void sub_00206F6A(void) { ds_trace(0x00206F6Au, sub_00206F6A_gen); }
+
+/* #47, OOGIE_DS_TRACE=1: XACT's streamed-wave bookkeeping. sub_0022A204
+ * (thiscall, ret 0xC) fills one stream packet for the wave context in its
+ * first argument; when the context's bytes-left [+0x44] is 0 it marks the
+ * packet 0xDEAD and ends the stream (0x22A51E): a line that ends at once.
+ * sub_00226C83 (thiscall, ret 8) returns a wave's region (offset, length)
+ * from the wave bank in ecx for wave index arg 1. Both logged in the window. */
+static int dst_in_window(void)
+{
+    LARGE_INTEGER now;
+    if (s_dst <= 0) return 0;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart <= s_dst_until.QuadPart;
+}
+void sub_0022A204_enter(void)
+{
+    uint32_t c = OOGIE_MEM32(g_esp + 4);
+    if (!dst_in_window() || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f fill ctx %08X pkt %u: left %08X done %08X loop %08X 50:%08X 58:%08X region %08X %08X %08X %08X %08X | 74:%08X 78:%08X 84:%04X\n",
+            dsv_ms(), c, OOGIE_MEM32(g_esp + 8), OOGIE_MEM32(c + 0x44), OOGIE_MEM32(c + 0x48), OOGIE_MEM32(c + 0x4C),
+            OOGIE_MEM32(c + 0x50), OOGIE_MEM32(c + 0x58), OOGIE_MEM32(c + 0x5C), OOGIE_MEM32(c + 0x60), OOGIE_MEM32(c + 0x64),
+            OOGIE_MEM32(c + 0x68), OOGIE_MEM32(c + 0x6C), OOGIE_MEM32(c + 0x74), OOGIE_MEM32(c + 0x78), (unsigned)OOGIE_MEM16(c + 0x84));
+}
+extern void sub_00226C83_gen(void);
+void sub_00226C83(void)
+{
+    uint32_t bank = g_ecx, wave = OOGIE_MEM32(g_esp + 4), r = OOGIE_MEM32(g_esp + 8), hdr;
+    int on = dst_in_window();
+    sub_00226C83_gen();
+    if (!on || !dsv_room()) return;
+    hdr = OOGIE_MEM32(bank + 0x1C);
+    fprintf(stderr, "[DST] %.1f region bank %08X wave %u (of %u, flags %08X): %08X %08X %08X %08X %08X %08X\n",
+            dsv_ms(), bank, wave, OOGIE_MEM32(hdr + 4), OOGIE_MEM32(hdr), OOGIE_MEM32(r), OOGIE_MEM32(r + 4), OOGIE_MEM32(r + 8),
+            OOGIE_MEM32(r + 12), OOGIE_MEM32(r + 16), OOGIE_MEM32(r + 20));
+}
+/* #47, OOGIE_DS_TRACE=1: XACT stops a wave's voice (thiscall, ecx = wave,
+ * arg = with release). Its caller says which rule ended the wave. */
+void sub_0022571F_enter(void)
+{
+    uint32_t w = g_ecx;
+    if (!dst_in_window() || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f wave stop %08X from %08X arg %u: flags %04X 2:%04X 1c:%08X 20:%08X 40:%08X 44:%08X 48:%08X 50:%08X 84:%04X\n",
+            dsv_ms(), w, OOGIE_MEM32(g_esp), OOGIE_MEM32(g_esp + 4), (unsigned)OOGIE_MEM16(w), (unsigned)OOGIE_MEM16(w + 2),
+            OOGIE_MEM32(w + 0x1C), OOGIE_MEM32(w + 0x20), OOGIE_MEM32(w + 0x40), OOGIE_MEM32(w + 0x44), OOGIE_MEM32(w + 0x48),
+            OOGIE_MEM32(w + 0x50), (unsigned)OOGIE_MEM16(w + 0x84));
+}
+/* #47, OOGIE_DS_TRACE=1: XACT's voice Release (stdcall, arg = voice;
+ * [voice+8] = references). At 1 the voice is stopped and pooled. */
+void sub_00226381_enter(void)
+{
+    uint32_t v = OOGIE_MEM32(g_esp + 4);
+    if (!dst_in_window() || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f voice release %08X refs %u from %08X (stack %08X %08X %08X %08X %08X %08X)\n",
+            dsv_ms(), v, OOGIE_MEM32(v + 8), OOGIE_MEM32(g_esp),
+            OOGIE_MEM32(g_esp + 8), OOGIE_MEM32(g_esp + 12), OOGIE_MEM32(g_esp + 16), OOGIE_MEM32(g_esp + 20),
+            OOGIE_MEM32(g_esp + 24), OOGIE_MEM32(g_esp + 28));
+}
+
+/* #47, OOGIE_DS_TRACE=1: DirectSound's stream start (thiscall, ecx = the
+ * stream's voice object): its state, pending-packet list [+0xA8], the two
+ * SSL records ([+0x88 + 16*i]: +8 = segments) and what it did (eax bit 0 =
+ * an SSL was programmed, bit 1 = a packet was mapped). */
+extern void sub_00209533_gen(void);
+void sub_00209533(void)
+{
+    uint32_t vo = g_ecx, s0 = OOGIE_MEM16(vo + 0x12), q0 = OOGIE_MEM32(vo + 0xA8) != vo + 0xA8;
+    uint32_t n0 = OOGIE_MEM32(vo + 0x88 + 8), n1 = OOGIE_MEM32(vo + 0x98 + 8);
+    int on = dst_in_window();
+    sub_00209533_gen();
+    if (!on || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f stream start vo %08X: state %04X->%04X queued %u->%u ssl %u/%u->%u/%u idx %u,%u 80:%08X(%02X) -> %08X\n",
+            dsv_ms(), vo, s0, (unsigned)OOGIE_MEM16(vo + 0x12), q0, OOGIE_MEM32(vo + 0xA8) != vo + 0xA8,
+            n0, n1, OOGIE_MEM32(vo + 0x88 + 8), OOGIE_MEM32(vo + 0x98 + 8),
+            OOGIE_MEM32(vo + 0x190), OOGIE_MEM32(vo + 0x194),
+            OOGIE_MEM32(vo + 0x80), OOGIE_MEM32(vo + 0x80) ? (unsigned)OOGIE_MEM8(OOGIE_MEM32(vo + 0x80) + 0xB) : 0u, g_eax);
+}
+
+/* #47, OOGIE_DS_TRACE=1: a packet added to a stream's queue (sub_002097EB,
+ * the tail of [voice+0xA8]) and the queue flushed (sub_00209443: every
+ * pending packet completed at once), with their callers. */
+void sub_002097EB_enter(void)
+{
+    if (!dst_in_window() || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f packet submit ecx %08X from %08X (%08X %08X %08X)\n", dsv_ms(), g_ecx,
+            OOGIE_MEM32(g_esp), OOGIE_MEM32(g_esp + 4), OOGIE_MEM32(g_esp + 8), OOGIE_MEM32(g_esp + 12));
+}
+void sub_00209443_enter(void)
+{
+    if (!dst_in_window() || !dsv_room()) return;
+    fprintf(stderr, "[DST] %.1f queue flush vo %08X from %08X arg %08X state %04X queued %u (stack %08X %08X %08X %08X)\n", dsv_ms(), g_ecx,
+            OOGIE_MEM32(g_esp), OOGIE_MEM32(g_esp + 4), (unsigned)OOGIE_MEM16(g_ecx + 0x12), OOGIE_MEM32(g_ecx + 0xA8) != g_ecx + 0xA8,
+            OOGIE_MEM32(g_esp + 8), OOGIE_MEM32(g_esp + 12), OOGIE_MEM32(g_esp + 16), OOGIE_MEM32(g_esp + 20));
+}
+/* #47, OOGIE_DS_TRACE=1: XACT's stream packet pump for one wave (sub_0022BB0E,
+ * thiscall, arg = wave context, ret 4): the context's flag word [+0] and
+ * bytes left [+0x44] before and after, and each packet's status and mark
+ * ([[+0x40] + 0x10 + 32*i]: +0 status, +8 0xAAAA filled / 0xDEAD end). */
+extern void sub_0022BB0E_gen(void);
+void sub_0022B1AC(void);
+void sub_00225D0A(void);
+static int pump_finish(uint32_t self, uint32_t c);
+void sub_0022BB0E(void)
+{
+    uint32_t self = g_ecx, c = OOGIE_MEM32(g_esp + 4), f0 = OOGIE_MEM16(c), l0 = OOGIE_MEM32(c + 0x44), pk, i;
+    int on = dst_in_window();
+    sub_0022BB0E_gen();
+    pump_finish(self, c);
+    if (!on || !dsv_room()) return;
+    pk = OOGIE_MEM32(c + 0x40);
+    fprintf(stderr, "[DST] %.1f pump ctx %08X: flags %04X->%04X left %08X->%08X 84:%04X ->%08X |", dsv_ms(), c, f0,
+            (unsigned)OOGIE_MEM16(c), l0, OOGIE_MEM32(c + 0x44), (unsigned)OOGIE_MEM16(c + 0x84), g_eax);
+    for (i = 0; pk && i < 4; i++)
+        fprintf(stderr, " p%u %08X/%04X", i, OOGIE_MEM32(pk + 0x10 + 32 * i), OOGIE_MEM32(pk + 0x18 + 32 * i) & 0xFFFF);
+    fprintf(stderr, "\n");
+}
+
+/* ── Oogie: a short streamed line's packet is submitted (#47) ──
+ *
+ * Verified (fy2, fy3, OOGIE_DS_TRACE=1; Mr. Hyde's save talk lines 11 and 12,
+ * silent in the owner's video 2026-10-28 22:30, and every run since): XACT's
+ * packet pump for a streamed wave (sub_0022BB0E, this = ecx, arg = the wave
+ * context) fills packet 0 with the whole of a short wave (mark 0xAAAA, "filled,
+ * to submit"), finds the source empty for packet 1 (mark 0xDEAD, end path of
+ * sub_0022A204: Discontinuity), and returns with packet 0 never submitted
+ * (status 0, mark still 0xAAAA). Play's stream start then finds no packet
+ * (`queued 0->0`) and XACT ends the line 10-30 ms later: a subtitle with no
+ * voice. A line long enough to need more than one packet leaves the pump with
+ * both packets submitted (status 0x8000000A, mark 0xFFFF) and plays. After the
+ * pump, a wave whose stream has not started yet and that is left with a filled,
+ * unsubmitted packet beside an end packet gets that packet submitted through
+ * XACT's own submit (sub_0022B1AC, the call the pump makes at 0x22BBE8, with
+ * the descriptor it builds at 0x22BBAF), then the end-of-data Discontinuity
+ * that follows a last submit at 0x22BBED. Hypothesis for the console: there
+ * the read of packet 1 is asynchronous, so the pump submits packet 0 before
+ * it learns the source is empty. OOGIE_SHORT_STREAM_OLD=1: the original. */
+static int s_ps_old = -1;
+static int pump_finish(uint32_t self, uint32_t c)
+{
+    uint32_t pk, v, st, vo, state, i, slot, other, esp0, eax0, ecx0, edx0, base, args[3], r;
+    if (s_ps_old < 0) { const char *e = getenv("OOGIE_SHORT_STREAM_OLD"); s_ps_old = e && *e == '1'; }
+    if (s_ps_old || !c || !(pk = OOGIE_MEM32(c + 0x40)) || !(v = OOGIE_MEM32(c + 4))
+            || !(st = OOGIE_MEM32(v + 0x20)) || !(vo = OOGIE_MEM32(st + 0x24)))
+        return 0;
+    state = OOGIE_MEM16(vo + 0x12);
+    if (!(state & 0x20) || (state & 3) == 3)             /* started already, or not waiting to start */
+        return 0;
+    for (i = 0; i < 2; i++) {
+        slot = pk + 0x10 + 32 * i;
+        other = pk + 0x10 + 32 * (1 - i);
+        if ((OOGIE_MEM32(slot + 8) & 0xFFFF) != 0xAAAA || OOGIE_MEM32(slot) == 0x8000000Au
+                || (OOGIE_MEM32(other + 8) & 0xFFFF) != 0xDEAD)
+            continue;
+        esp0 = g_esp; eax0 = g_eax; ecx0 = g_ecx; edx0 = g_edx;
+        base = (esp0 - 0x100u) & ~15u;
+        OOGIE_MEM32(base + 0x00) = (OOGIE_MEM32(pk + 0xC) & 0x7FFFFFFFu) * i + OOGIE_MEM32(pk + 8);   /* buffer */
+        OOGIE_MEM32(base + 0x04) = OOGIE_MEM32(slot + 4);                                            /* length */
+        OOGIE_MEM32(base + 0x08) = 0;
+        OOGIE_MEM32(base + 0x0C) = slot;
+        OOGIE_MEM32(base + 0x10) = 0;
+        OOGIE_MEM32(base + 0x14) = 0;
+        g_esp = base - 0x10u;
+        g_ecx = self;
+        args[0] = c; args[1] = i; args[2] = base;
+        r = guest_stdcalln(sub_0022B1AC, 0x0022BBEDu, 3, args);
+        if ((int32_t)r >= 0 && !OOGIE_MEM32(c + 0x44) && !OOGIE_MEM32(c + 0x50) && !(OOGIE_MEM16(c) & 0x10)) {
+            g_ecx = v;
+            guest_stdcalln(sub_00225D0A, 0x0022BC07u, 0, NULL);
+        }
+        {
+            static volatile LONG n;
+            if (InterlockedIncrement(&n) <= 200) {
+                fprintf(stderr, "[VOICE] short streamed wave (ctx %08X, %u bytes): packet %u was left unsubmitted before the start, submitted -> %08X, now %08X/%04X\n",
+                        c, OOGIE_MEM32(base + 4), i, r, OOGIE_MEM32(slot), OOGIE_MEM32(slot + 8) & 0xFFFF);
+                fflush(stderr);
+            }
+        }
+        g_esp = esp0; g_eax = eax0; g_ecx = ecx0; g_edx = edx0;
+        return 1;
+    }
+    return 0;
 }

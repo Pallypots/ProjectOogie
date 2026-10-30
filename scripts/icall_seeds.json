@@ -570,5 +570,81 @@
  {
   "start": "0x001677A0",
   "source": "callback scan 2026-10-25 (mov [reg+disp], imm32 to an undetected function start)"
+ },
+ {
+  "start": "0x000A00C8",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A00E5",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0102",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0315",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A031F",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A034C",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A09DC",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A09E6",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0A99",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0B29",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0B46",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0B63",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0B7E",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0B95",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0BCE",
+  "source": "GitHub #2 (deflect crash) + switch-table scan, 2026-10-29"
+ },
+ {
+  "start": "0x000A0555",
+  "source": "GitHub #2 switch-table scan pass 2, 2026-10-29"
+ },
+ {
+  "start": "0x000A0584",
+  "source": "GitHub #2 switch-table scan pass 2, 2026-10-29"
+ },
+ {
+  "start": "0x000A0605",
+  "source": "GitHub #2 switch-table scan pass 2, 2026-10-29"
+ },
+ {
+  "start": "0x000A0BBB",
+  "source": "GitHub #2 switch-table scan pass 2, 2026-10-29"
  }
 ]

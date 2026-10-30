@@ -341,3 +341,15 @@ See docs/IMPROVEMENT_PLAN.md.
 - Verified: 24/24 chapters, two 15-minute combat soaks, the zip under Wine 10 (TEST_RESULTS v02, v02s1-2, v02zip).
 - Packaged: `dist/ProjectOogie-v0.2.zip`. Release notes: docs/RELEASE_NOTES_0.2.md. Drafts for GitHub #1 and Reddit: trailer/v02_replies.md (not in git).
 - Not done: commit, push, GitHub release, posts (waiting for the owner). Owner play test of 0.2 skipped by the owner's choice.
+
+## Dev cycle 8: 2026-10-28/29 (sound dropouts, GitHub #1 and owner)
+
+- Owner's Chapter 1 play.log and two videos: Mr. Hyde's middle lines and the results announcer silent, no Soul Robber sounds against Shadow Oogie.
+- Fixed (#84): voice stops were forced after a 16-50 ms silence because the APU interrupt was held off while DirectSound waited for a stop. Verified in dv6, fx2-fx9: 0 forced stops, 0 crashes. Not yet checked in the Shadow Oogie fight itself.
+- Fixed (#47): short streamed voice lines (under about 1.4 s) never started, because XACT left their only packet unsubmitted when the source ran dry before Play. Verified on Mr. Hyde's two silent lines (fz1: now 1.2 s each with a voice). The results announcer is expected to use the same path, not yet checked. The stream-slot theory is ruled out.
+- Full-game check after both sound fixes (sv sweep): 24/24 chapters, no crashes or stalls.
+- GitHub #2 (#85): deflecting a projectile crashed the game. Cause: five jump-table switches in the hit/projectile code had case targets never translated (19 in all, found by the new scripts/jt_scan.py). All seeded; the scan now finds none. A real deflect is not yet tested in play (df1/df2 didn't trigger one).
+- New diagnostics, off by default: OOGIE_DSV_TRACE, OOGIE_DS_TRACE, [XSN] lines under OOGIE_XACT_TRACE, OOGIE_SELFTEST_JT.
+- Test harness: scripts/step.ps1 (one press plus screenshot), fight_to_hyde.ps1 -Dsv -NoStop.
+- Nothing committed.
+
