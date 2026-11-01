@@ -85,6 +85,11 @@ static const char s_default_ini[] =
 "; Discord app running on this PC): 1 on, 0 off.\n"
 "rich_presence = 1\n"
 "\n"
+"[Cheats]\n"
+"; 1 on, 0 off; also F1 > Cheats, at once. Saves made while on keep the souls.\n"
+"infinite_health = 0\n"
+"max_souls = 0\n"
+"\n"
 "[Controller]\n"
 "; Xbox 360, Xbox One and Xbox Series pads (wired or Bluetooth) always work.\n"
 "; PlayStation pads (DualShock 4, DualSense), Switch Pro and most other pads\n"
@@ -441,6 +446,8 @@ void pc_config_load(void)
     g_pc.pause_bg = pc_settings_int("Audio", "pause_in_background", 0) != 0;
     g_pc.skip_intro = pc_settings_int("Display", "skip_intro", 0) != 0;
     g_pc.discord = pc_settings_int("Discord", "rich_presence", 1) != 0;
+    g_pc.cheat_health = pc_settings_int("Cheats", "infinite_health", 0) != 0;
+    g_pc.cheat_souls = pc_settings_int("Cheats", "max_souls", 0) != 0;
     g_pc.language = pc_settings_int("Display", "language", 1);
     if (g_pc.language != 3 && g_pc.language != 4 && g_pc.language != 5 && g_pc.language != 6)
         g_pc.language = 1;

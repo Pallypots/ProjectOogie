@@ -449,9 +449,11 @@ int oogie_sem_watch(void)
 }
 
 static OOGIE_TLS uint32_t t_fence_wanted;  /* this thread's fence wait (sub_001D7670) */
+void oogie_cheats_apply(void);   /* Cheats, end of this file */
 void sub_001D78D0_enter(void)
 {
     static uint32_t s_sem;
+    oogie_cheats_apply();
     uint32_t dev = *(volatile uint32_t *)((uintptr_t)OOGIE_D3D_DEVICE_PTR + g_xbox_mem_offset);
     s_fence_wanted = *(volatile uint32_t *)((uintptr_t)(g_esp + 4) + g_xbox_mem_offset);
     t_fence_wanted = s_fence_wanted;
@@ -3900,4 +3902,26 @@ static int pump_finish(uint32_t self, uint32_t c)
         return 1;
     }
     return 0;
+}
+
+/* ---- Cheats (GitHub #6, F1 > Cheats) ----------------------------------------
+ * Jack's stats live at 0x420C24 (maximum health) and 0x420C28 (health): copied
+ * in from the save by sub_00056740 -> sub_000CFB50, changed in place by hits
+ * and read by the HUD drawer sub_000A8D10. Souls are [0x413188], in the save
+ * block; the game's own adder sub_000414F0 keeps them within 0..999 (0x3E7).
+ * Verified with scripts/memscan.py: health 10 -> 5 -> 2 -> 0 at the Continue
+ * screen, 10 again after it; souls 0 -> 5 -> 8 -> 10 -> 17 from skeletons, kept
+ * through Continue, and 777 written became 779 two pickups later. The cheats
+ * are applied once per frame from the GPU fence wait (sub_001D78D0_enter);
+ * the HUD drawer sub_000A8D10 is not called every frame (ch1c). Health is
+ * only set while the maximum is a real one (1..100), so menus are untouched. */
+void oogie_cheats_apply(void)
+{
+    if (g_pc.cheat_health) {
+        uint32_t mx = OOGIE_MEM32(0x420C24);
+        if (mx >= 1 && mx <= 100 && OOGIE_MEM32(0x420C28) < mx)
+            OOGIE_MEM32(0x420C28) = mx;
+    }
+    if (g_pc.cheat_souls && OOGIE_MEM32(0x413188) != 999)
+        OOGIE_MEM32(0x413188) = 999;
 }

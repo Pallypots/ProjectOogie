@@ -71,9 +71,9 @@ float oogie_audio_gain(void)
 }
 
 /* ---- the menu's content --------------------------------------------------- */
-enum { P_DISPLAY, P_GRAPHICS, P_AUDIO, P_CONTROLS, P_KEYBOARD, P_PAD, P_MODS, P_ABOUT, P_COUNT };
+enum { P_DISPLAY, P_GRAPHICS, P_AUDIO, P_CONTROLS, P_KEYBOARD, P_PAD, P_CHEATS, P_MODS, P_ABOUT, P_COUNT };
 static const char *const s_page_names[P_COUNT] = {
-    "Display", "Graphics", "Audio", "Controls", "Keyboard", "Controller", "Mods", "About"
+    "Display", "Graphics", "Audio", "Controls", "Keyboard", "Controller", "Cheats", "Mods", "About"
 };
 
 /* Mods page (dev cycle 4): one row per folder in mods\, On or Off (a file
@@ -274,6 +274,11 @@ static Item s_items[] = {
     PADB("D-pad Right", "DpadRight", "DRight"),
 #undef PADB
 
+    /* Cheats (GitHub #6): applied while the game draws its HUD (recomp_manual.c, sub_000A8D10_enter) */
+    { P_CHEATS, "Infinite Health", "Jack's health stays full: hits and falls do no harm.",
+      IT_CHOICE, &g_pc.cheat_health, o_onoff, 2, 0, "Cheats", "infinite_health" },
+    { P_CHEATS, "Max Souls", "Souls stay at 999, the most the game holds: buy anything at the Witches' Shop. Saves keep them.",
+      IT_CHOICE, &g_pc.cheat_souls, o_onoff, 2, 0, "Cheats", "max_souls" },
     { P_MODS, s_mods_status, NULL, IT_INFO },
     { P_MODS, "Open Mods Folder", "Mods go in mods\\<mod name>\\files\\ (game files) and \\textures\\ (texture packs).",
       IT_ACTION, NULL, NULL, 0, 0, NULL, NULL, NULL, 0, act_open_mods },
@@ -1270,7 +1275,11 @@ static void draw_menu(UINT W, UINT H)
 
     /* Page tabs. */
     {
-        float tx = px0 + 60, ty = 232, tp = 36;
+        float tx = px0 + 60, ty = 232, tp = 36, tw = 0;
+        for (i = 0; i < P_COUNT; i++)
+            tw += text_w(s_page_names[i], tp) + (i ? 34 : 0);
+        if (tw > px1 - px0 - 120)
+            tp *= (px1 - px0 - 120) / tw;
         for (i = 0; i < P_COUNT; i++) {
             float w = text_w(s_page_names[i], tp);
             if (i == s_page) {
@@ -1279,7 +1288,7 @@ static void draw_menu(UINT W, UINT H)
             } else {
                 text(tx, ty, tp, s_page_names[i], C_OLIVE_T, C_OLIVE_B, 0);
             }
-            tx += w + 34;
+            tx += w + 34 * tp / 36;
         }
         if (s_art_ok) art_divider(px0 + 40, px1 - 40, 292, RGBA_(200, 180, 140, 230));
         else rect(px0 + 40, 288, px1 - 40, 290, RGBA_(120, 96, 52, 200), RGBA_(120, 96, 52, 200));

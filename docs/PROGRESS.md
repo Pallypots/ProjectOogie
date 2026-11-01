@@ -362,3 +362,10 @@ See docs/IMPROVEMENT_PLAN.md.
 - GitHub #3 sound cut-outs on the Deck (#88): open, needs a log from 0.2.3.
 - Drafts (not posted): trailer/v023_issue3_reply.md, trailer/v023_issue4_5_reply.md.
 - Nothing committed.
+
+## Dev cycle 10: 2026-11-01 (GitHub #6 cheat menu)
+
+- 0.2.3 released 2026-11-01 (languages, Discord, Deck clown fix); replies on #3, #4, #5.
+- The overnight run stalled: the first memory reader looked for the XBE header only at the start of each memory region, found nothing, and its test was left waiting; nothing ran until the owner's message. Long tests now stop themselves (mem_fight.ps1, mem_chapter.ps1 caps).
+- Health [0x420C28] / max [0x420C24] and souls [0x413188] found (docs/REVERSE_ENGINEERING.md). F1 > Cheats: Infinite Health and Max Souls (999), verified in a Chapter 1 fight (KNOWN_ISSUES #89).
+- Release notes: docs/RELEASE_NOTES_0.2.4.md; reply draft trailer/v024_issue6_reply.md.

@@ -55,6 +55,8 @@ typedef struct {
     int mute_bg;         /* mute while the window is in the background */
     int pause_bg;        /* switching away opens the settings menu (pauses) */
     int skip_intro;      /* press Start through the company logos film */
+    int cheat_health;    /* Cheats page (GitHub #6): Jack's health kept full (recomp_manual.c) */
+    int cheat_souls;     /* Cheats page: souls kept at the game's cap, 999 */
     int discord;         /* Discord Rich Presence: chapter on the Discord profile (pc_discord.c) */
     int language;        /* the console language the game sees: 1 English, 3 German, 4 French,
                             5 Spanish, 6 Italian (Xbox numbers; recomp_manual.c sub_0019C200_enter) */
