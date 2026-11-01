@@ -3964,7 +3964,54 @@ static void apply_config(void)
 /* Vsync: Present waits for the monitor. When the refresh rate is a whole
  * multiple of the frame cap (60 Hz, 120 Hz at 60 fps ...) that wait also
  * paces the game and the timer stays out of it; otherwise the timer paces
- * and Present waits one refresh. */
+ * and Present waits one refresh.
+ * GitHub #7: on a player's PC (RTX 4080, 1440p) films and cutscenes ran at
+ * twice their speed: the game loop ran 120 times a second with the cap at 60
+ * (movie frames 734 -> 1334 in 10 s, two loop steps per film frame). The
+ * monitor's reported rate and its real one can differ (high refresh, G-SYNC,
+ * a driver forcing vsync off), and then vsync does not hold the game to the
+ * cap. vsync_guard measures the presents: more than the cap + 10% for three
+ * seconds in a row while vsync paces (a catch-up burst after a load hitch reached
+ * 77 fps for two seconds on a 60 Hz screen, pc1), and the timer paces for the rest of the session. */
+static int s_vsync_fast;               /* vsync was seen not to hold the cap */
+
+static void pace_note(int hz)
+{
+    static int last = -1;
+    int now = s_vsync_paces ? (int)s_sync_interval : 0;
+    int key = now * 100000 + hz * 100 + g_pc.fps_cap + (g_pc.vsync ? 50000000 : 0);
+    if (key == last) return;
+    last = key;
+    if (s_vsync_paces)
+        fprintf(stderr, "[PACE] monitor %d Hz, cap %d: vsync paces (every %u refreshes)\n", hz, g_pc.fps_cap, s_sync_interval);
+    else
+        fprintf(stderr, "[PACE] monitor %d Hz, cap %d, vsync %s: the timer paces\n", hz, g_pc.fps_cap,
+                g_pc.vsync ? (s_vsync_fast ? "on but too fast" : "on") : "off");
+}
+
+static void vsync_guard(void)
+{
+    static LARGE_INTEGER freq, t0;
+    static int n, over;
+    LARGE_INTEGER now;
+    if (!s_vsync_paces) { t0.QuadPart = 0; over = 0; return; }
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    if (!t0.QuadPart) { t0 = now; n = 0; return; }
+    n++;
+    if (now.QuadPart - t0.QuadPart < freq.QuadPart) return;
+    {
+        double fps = n * (double)freq.QuadPart / (double)(now.QuadPart - t0.QuadPart);
+        over = fps > g_pc.fps_cap * 1.1 ? over + 1 : 0;
+        if (over >= 3) {
+            s_vsync_fast = 1;
+            fprintf(stderr, "[PACE] vsync ran at %.0f fps, above the cap of %d: the timer paces from now on\n",
+                    fps, g_pc.fps_cap);
+        }
+    }
+    t0 = now; n = 0;
+}
+
 static void choose_sync(void)
 {
     static DWORD t;
@@ -3980,12 +4027,14 @@ static void choose_sync(void)
             hz = (int)dm.dmDisplayFrequency;
     }
     s_vsync_paces = 0; s_sync_interval = 0;
-    if (!g_pc.vsync) return;
+    if (!g_pc.vsync) { pace_note(hz); return; }
     s_sync_interval = 1;
-    if (g_pc.fps_cap > 0) {
+    if (g_pc.fps_cap > 0 && !s_vsync_fast) {
         int k = (hz + g_pc.fps_cap / 2) / g_pc.fps_cap;
         if (k >= 1 && k <= 4 && abs(hz - k * g_pc.fps_cap) <= 1) { s_vsync_paces = 1; s_sync_interval = (UINT)k; }
     }
+    pace_note(hz);
+    vsync_guard();
 }
 
 static float s_fps_shown;
@@ -4218,7 +4267,9 @@ static void present_rt(RenderTarget *r, int shot, int wide)
     ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
     choose_sync();
     {
-        HRESULT hr = IDXGISwapChain_Present(s_swap, s_sync_interval, 0);
+        static int no_block = -1;   /* test only: a monitor whose vsync does not hold the game (#7) */
+        if (no_block < 0) { const char *e = getenv("OOGIE_TEST_VSYNC_NOBLOCK"); no_block = e && *e == '1'; }
+        HRESULT hr = IDXGISwapChain_Present(s_swap, (no_block && s_vsync_paces) ? 0 : s_sync_interval, 0);
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             /* The graphics driver stopped (it crashed and Windows reset it,
              * it was updated, or the GPU was switched). Every D3D call fails

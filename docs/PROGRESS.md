@@ -369,3 +369,9 @@ See docs/IMPROVEMENT_PLAN.md.
 - The overnight run stalled: the first memory reader looked for the XBE header only at the start of each memory region, found nothing, and its test was left waiting; nothing ran until the owner's message. Long tests now stop themselves (mem_fight.ps1, mem_chapter.ps1 caps).
 - Health [0x420C28] / max [0x420C24] and souls [0x413188] found (docs/REVERSE_ENGINEERING.md). F1 > Cheats: Infinite Health and Max Souls (999), verified in a Chapter 1 fight (KNOWN_ISSUES #89).
 - Release notes: docs/RELEASE_NOTES_0.2.4.md; reply draft trailer/v024_issue6_reply.md.
+
+## Dev cycle 11: 2026-11-01 (GitHub #7 film speed)
+
+- 0.2.4 released (cheat menu, #6).
+- #7: the player's game ran about 120 loops a second during films with the cap at 60 (KNOWN_ISSUES #90). Pacing guard in d3d11_backend.c: if vsync lets the game run above the cap for three seconds, the timer paces. 30 fps relabelled as half speed.
+- Release notes: docs/RELEASE_NOTES_0.2.5.md; reply draft trailer/v025_issue7_reply.md.
