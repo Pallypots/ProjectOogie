@@ -55,6 +55,9 @@ typedef struct {
     int mute_bg;         /* mute while the window is in the background */
     int pause_bg;        /* switching away opens the settings menu (pauses) */
     int skip_intro;      /* press Start through the company logos film */
+    int discord;         /* Discord Rich Presence: chapter on the Discord profile (pc_discord.c) */
+    int language;        /* the console language the game sees: 1 English, 3 German, 4 French,
+                            5 Spanish, 6 Italian (Xbox numbers; recomp_manual.c sub_0019C200_enter) */
     volatile long gen;   /* bumped on every change */
 } PcConfig;
 

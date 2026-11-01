@@ -9,8 +9,48 @@
  * on. OOGIE_GCPU_FIFO=1: first come, first served (the #61 ticket order). */
 #define GCPU_MAXW 256
 static unsigned g_gcpu_next;
-static struct { unsigned t; int p; } g_gcpu_w[GCPU_MAXW];
+static struct { unsigned t; int p; ULONGLONG since; } g_gcpu_w[GCPU_MAXW];
 static int g_gcpu_nw, g_gcpu_busy, g_gcpu_fifo = -1, g_gcpu_holder_p;
+/* Starvation guard (GitHub #3, KNOWN_ISSUES #86): a waiter that has wanted
+ * the CPU for OOGIE_GCPU_STARVE_MS (default 50; 0 = off) goes first whatever
+ * its priority, as the Windows scheduler boosts a starved thread. Without it
+ * a priority -2 loader never ran while priority 1 threads polled for its
+ * result (Steam Deck, Proton: the CPU went back to the poller every time
+ * before the woken loader got to it; black screen at the Chapter 2 film). */
+static int g_gcpu_starve_ms = -1;
+/* Test only: OOGIE_GCPU_SLOW_WAKE_MS=N makes a woken thread of priority below
+ * 0 wait N ms before it looks again, like a slow wake-up under Wine. */
+static int g_gcpu_slow_wake = -1;
+static void gcpu_slow_wake(int p)
+{
+    if (g_gcpu_slow_wake < 0) {
+        const char *e = getenv("OOGIE_GCPU_SLOW_WAKE_MS");
+        g_gcpu_slow_wake = e && *e ? atoi(e) : 0;
+    }
+    if (g_gcpu_slow_wake > 0 && p < 0) {
+        ReleaseSRWLockExclusive(&g_gcpu_m);
+        Sleep((DWORD)g_gcpu_slow_wake);
+        AcquireSRWLockExclusive(&g_gcpu_m);
+    }
+}
+static int gcpu_eff(int i, ULONGLONG now)
+{
+    if (g_gcpu_starve_ms > 0 && now - g_gcpu_w[i].since >= (ULONGLONG)g_gcpu_starve_ms)
+        return 1000;
+    return g_gcpu_w[i].p;
+}
+static int gcpu_best(ULONGLONG now)
+{
+    int i, best = -1, bp = 0;
+    for (i = 0; i < g_gcpu_nw; i++) {
+        int e = gcpu_eff(i, now);
+        if (best < 0 || e > bp || (e == bp && (int)(g_gcpu_w[i].t - g_gcpu_w[best].t) < 0)) {
+            best = i;
+            bp = e;
+        }
+    }
+    return best;
+}
 /* Set while a thread of higher priority than the holder waits: the holder
  * gives the CPU up at its next safepoint (a guest function call,
  * guest_cpu_safepoint), as the console's scheduler preempts it. */
@@ -36,12 +76,17 @@ static void gcpu_enter(void)
         g_gcpu_fifo = e && *e == '1';
     }
     if (g_gcpu_fifo) p = 0;
+    if (g_gcpu_starve_ms < 0) {
+        const char *e = getenv("OOGIE_GCPU_STARVE_MS");
+        g_gcpu_starve_ms = e && *e ? atoi(e) : 50;
+    }
     t = g_gcpu_next++;
     if (g_gcpu_busy && p > g_gcpu_holder_p)
         g_gcpu_preempt = 1;
     if (g_gcpu_nw < GCPU_MAXW) {
         g_gcpu_w[g_gcpu_nw].t = t;
         g_gcpu_w[g_gcpu_nw].p = p;
+        g_gcpu_w[g_gcpu_nw].since = GetTickCount64();
         g_gcpu_nw++;
     }
     {
@@ -59,11 +104,7 @@ static void gcpu_enter(void)
             QueryPerformanceCounter(&a);
             waits++;
             for (;;) {
-                int best = -1;
-                for (i = 0; i < g_gcpu_nw; i++)
-                    if (best < 0 || g_gcpu_w[i].p > g_gcpu_w[best].p
-                            || (g_gcpu_w[i].p == g_gcpu_w[best].p && (int)(g_gcpu_w[i].t - g_gcpu_w[best].t) < 0))
-                        best = i;
+                int best = gcpu_best(GetTickCount64());
                 if (!g_gcpu_busy && (best < 0 || g_gcpu_w[best].t == t)) break;
                 {
                     /* Time slice among equals (OOGIE_GCPU_QUANTUM_MS, default
@@ -71,8 +112,18 @@ static void gcpu_enter(void)
                      * run that long steps aside at its next safepoint. */
                     static int q = -1;
                     if (q < 0) { const char *e = getenv("OOGIE_GCPU_QUANTUM_MS"); q = e && *e ? atoi(e) : 10; }
-                    if (!SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, q > 0 ? (DWORD)q : INFINITE, 0)
-                            && q > 0 && g_gcpu_busy && p >= g_gcpu_holder_p) {
+                    int timed_out = !SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m,
+                            q > 0 || g_gcpu_starve_ms > 0 ? (DWORD)(q > 0 ? q : 10) : INFINITE, 0);
+                    /* starved: the holder steps aside at its next safepoint */
+                    gcpu_slow_wake(p);
+                    if (timed_out && g_gcpu_busy && g_gcpu_starve_ms > 0) {
+                        int k;
+                        ULONGLONG nw = GetTickCount64();
+                        for (k = 0; k < g_gcpu_nw; k++)
+                            if (g_gcpu_w[k].t == t && gcpu_eff(k, nw) > g_gcpu_holder_p)
+                                g_gcpu_preempt = 1;
+                    }
+                    if (timed_out && q > 0 && g_gcpu_busy && p >= g_gcpu_holder_p) {
                         LARGE_INTEGER nw;
                         QueryPerformanceCounter(&nw);
                         if (!g_gcpu_qpf.QuadPart) QueryPerformanceFrequency(&g_gcpu_qpf);
@@ -108,23 +159,33 @@ static void gcpu_enter(void)
         }
     }
     for (;;) {
-        int best = -1;
-        for (i = 0; i < g_gcpu_nw; i++)
-            if (best < 0 || g_gcpu_w[i].p > g_gcpu_w[best].p
-                    || (g_gcpu_w[i].p == g_gcpu_w[best].p && (int)(g_gcpu_w[i].t - g_gcpu_w[best].t) < 0))
-                best = i;
+        ULONGLONG nw = GetTickCount64();
+        int best = gcpu_best(nw);
         if (!g_gcpu_busy && (best < 0 || g_gcpu_w[best].t == t)) {
-            if (best >= 0) g_gcpu_w[best] = g_gcpu_w[--g_gcpu_nw];
+            if (best >= 0) {
+                static volatile LONG s_starve_logs;
+                if (gcpu_eff(best, nw) > g_gcpu_w[best].p) {
+                    int k, above = 0;
+                    for (k = 0; k < g_gcpu_nw; k++) if (g_gcpu_w[k].p > g_gcpu_w[best].p) above = 1;
+                    if (above && InterlockedIncrement(&s_starve_logs) <= 20)
+                        fprintf(stderr, "  [GCPU] starvation guard: host thread %lu (priority %d) waited %llu ms, runs ahead of higher priorities\n",
+                                (unsigned long)GetCurrentThreadId(), g_gcpu_w[best].p,
+                                (unsigned long long)(nw - g_gcpu_w[best].since));
+                }
+                g_gcpu_w[best] = g_gcpu_w[--g_gcpu_nw];
+            }
             break;
         }
-        SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, INFINITE, 0);
+        SleepConditionVariableSRW(&g_gcpu_cv, &g_gcpu_m, g_gcpu_starve_ms > 0 ? 10 : INFINITE, 0);
+        gcpu_slow_wake(p);
     }
     g_gcpu_busy = 1;
     g_gcpu_holder_p = p;
     {
         /* still a waiter above the new holder? */
         int k, hi = 0;
-        for (k = 0; k < g_gcpu_nw; k++) if (g_gcpu_w[k].p > p) hi = 1;
+        ULONGLONG nw = GetTickCount64();
+        for (k = 0; k < g_gcpu_nw; k++) if (gcpu_eff(k, nw) > p) hi = 1;
         g_gcpu_preempt = hi;
     }
     QueryPerformanceCounter(&g_gcpu_held_at);

@@ -625,6 +625,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
 
     /* Step 7: Call the recompiled entry point */
+    {
+        extern void pc_discord_start(void);
+        pc_discord_start();             /* Discord Rich Presence (pc_discord.c) */
+    }
     printf("\nStarting game...\n");
     fflush(stdout);
 

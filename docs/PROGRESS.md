@@ -353,3 +353,12 @@ See docs/IMPROVEMENT_PLAN.md.
 - Test harness: scripts/step.ps1 (one press plus screenshot), fight_to_hyde.ps1 -Dsv -NoStop.
 - Nothing committed.
 
+## Dev cycle 9: 2026-10-31 (GitHub #3 Steam Deck freeze, #4/#5 languages, Discord)
+
+- GitHub #3 (#86): Steam Deck / Proton black screen at the Chapter 2 clown. The low-priority loader never got the guest CPU while the main thread polled for it. Fix: starvation guard in patch guest_cpu_priority (50 ms, OOGIE_GCPU_STARVE_MS). Not reproduced on Windows, so the player has to confirm. 24/24 chapters alive with it (gd).
+- Discord Rich Presence (port/src/pc_discord.c): chapter on the Discord profile over Discord's local pipe, no SDK. F1 > Display > Discord Status, settings.ini [Discord]. Needs the owner's Discord application id (OOGIE_DISCORD_APP_ID in pc_discord.c or app_id in settings.ini); without one it stays off. Tested with scripts/fake_discord.ps1.
+- Languages (#87): all five European languages are on the US disc; the game's language can be switched (hooks sub_0019C200 / sub_00052A00). The European text is compiled for a font that is not on the US disc, so each letter code is changed to the US font's code where a glyph is drawn or measured (hooks sub_000380A0, sub_00038380, sub_00037FF0); accented letters show plain. F1 > Display > Language (next start). Verified on screen in French, German, Spanish, Italian.
+- Release candidate checks: rc (English, 24/24 chapters alive, 0 crashes, 0 ICALL failures) and rcfr (French, 8 chapters, 0 crashes). Release notes: docs/RELEASE_NOTES_0.2.3.md. Waiting for the owner's Discord application id before releasing.
+- GitHub #3 sound cut-outs on the Deck (#88): open, needs a log from 0.2.3.
+- Drafts (not posted): trailer/v023_issue3_reply.md, trailer/v023_issue4_5_reply.md.
+- Nothing committed.

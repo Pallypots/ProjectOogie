@@ -207,6 +207,7 @@ set(GAME_SOURCES
     src/pc_shot.c           # F12 screenshots (PNG through WIC)
     src/pc_d3dc.c           # HLSL compiler loaded at run time (shipped copy first: Proton)
     src/pc_sysinfo.c        # version and system details at the top of the log
+    src/pc_discord.c        # Discord Rich Presence over Discord's local pipe
     src/pc_setup.c          # first run: copy the game from the player's disc image
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c

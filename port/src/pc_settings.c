@@ -49,6 +49,10 @@ static const char s_default_ini[] =
 "; Frame-rate cap: 60 (the original speed) or 30. The game's logic, films and\n"
 "; music run per frame, so other values are not offered.\n"
 "fps_cap = 60\n"
+"; Language of the menus and text: 1 English, 4 French, 3 German, 5 Spanish,\n"
+"; 6 Italian. Voices stay English; accented letters show as plain letters\n"
+"; (the font on the US disc has none). Takes effect at the next start.\n"
+"language = 1\n"
 "\n"
 "[Graphics]\n"
 "; Internal resolution: 0 = Auto (the largest the window holds, lowered if the\n"
@@ -75,6 +79,11 @@ static const char s_default_ini[] =
 "volume = 100\n"
 "; Silence the game while its window is in the background.\n"
 "mute_in_background = 0\n"
+"\n"
+"[Discord]\n"
+"; Show the chapter you are playing on your Discord profile (needs the\n"
+"; Discord app running on this PC): 1 on, 0 off.\n"
+"rich_presence = 1\n"
 "\n"
 "[Controller]\n"
 "; Xbox 360, Xbox One and Xbox Series pads (wired or Bluetooth) always work.\n"
@@ -431,6 +440,16 @@ void pc_config_load(void)
     g_pc.audio_buffer = pc_settings_int("Audio", "buffer", 1) != 0;
     g_pc.pause_bg = pc_settings_int("Audio", "pause_in_background", 0) != 0;
     g_pc.skip_intro = pc_settings_int("Display", "skip_intro", 0) != 0;
+    g_pc.discord = pc_settings_int("Discord", "rich_presence", 1) != 0;
+    g_pc.language = pc_settings_int("Display", "language", 1);
+    if (g_pc.language != 3 && g_pc.language != 4 && g_pc.language != 5 && g_pc.language != 6)
+        g_pc.language = 1;
+    if (!getenv("OOGIE_XBOX_LANGUAGE")) {
+        /* the game's language (sub_0019C200_enter, recomp_manual.c) */
+        static char lang_env[32];
+        snprintf(lang_env, sizeof lang_env, "OOGIE_XBOX_LANGUAGE=%d", g_pc.language);
+        _putenv(lang_env);
+    }
     if (!getenv("RECOMP_AUDIO_BUF_COUNT"))
         /* XAudio2 queue: 4 buffers of 512 samples (43 ms) ran dry when a few
          * frames in a row took 30-40 ms (owner 2026-10-23, menus while a save

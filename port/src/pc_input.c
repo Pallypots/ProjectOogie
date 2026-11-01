@@ -523,6 +523,10 @@ static volatile DWORD s_intro_t0;
 void pc_input_path_watch(const char *xbox_path)
 {
     if (!xbox_path) return;
+    {
+        extern void pc_discord_path(const char *xbox_path);
+        pc_discord_path(xbox_path);   /* in a level or at the title (pc_discord.c) */
+    }
     if (strstr(xbox_path, "mv_00.bik") || strstr(xbox_path, "MV_00.BIK")) {
         s_intro_t0 = GetTickCount();
         InterlockedExchange(&s_intro, 1);

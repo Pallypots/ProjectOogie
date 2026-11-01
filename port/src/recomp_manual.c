@@ -2804,6 +2804,244 @@ void sub_001D6D20_enter(void)
         OOGIE_MEM32(0x001E254Cu) = 0x80000000u;
 }
 
+/* ── Oogie: game language (GitHub #4/#5, 2026-10-31) ──────────────
+ *
+ * Verified (static, text 0x52A20..0x52A88, 0x7748C, 0x591FD, 0x6D7BE,
+ * 0x19BEE5): the game's language is [0x3E2540] (0 none, 1 _u, 2 _b, 3 _f,
+ * 4 _g, 5 _i, 6 _s; suffix table 0x2DCD58). Init (sub_00052A20) writes 1;
+ * only the PAL language-select screen (sub_00059020) changes it, through
+ * the options byte [0x413145] that the setter sub_00052A00 also re-applies
+ * from (sub_0006D780, save load sub_0019BED0). The console language
+ * (XC_LANGUAGE) plays no part. sub_0019C200 runs right after the init
+ * (call at 0x19C4C1), before any language file is chosen. Setting it at
+ * New Game instead (sub_00077410) froze the game after ckpt_f.stm (fr2).
+ * The options reset sub_0019C350 also writes [0x413145] = 1 and the setter
+ * then applies it (fr3: title_u.stm after language 3 was set), so the
+ * setter's argument ([esp+4]) is replaced as well. settings.ini [Display]
+ * language holds Xbox language numbers (1 English, 3 German, 4 French,
+ * 5 Spanish, 6 Italian), passed as OOGIE_XBOX_LANGUAGE (pc_settings.c). */
+static int oogie_game_lang(void)
+{
+    static int lang = -1;
+    if (lang < 0) {
+        const char *e = getenv("OOGIE_XBOX_LANGUAGE");
+        int x = e && *e ? atoi(e) : 1;
+        lang = x == 4 ? 3 : x == 3 ? 4 : x == 6 ? 5 : x == 5 ? 6 : 1;
+        fprintf(stderr, "[OOGIE] game language %d (%s)\n", lang,
+                lang == 3 ? "French" : lang == 4 ? "German" : lang == 5 ? "Italian" : lang == 6 ? "Spanish" : "English");
+        fflush(stderr);
+    }
+    return lang;
+}
+void sub_0019C200_enter(void)
+{
+    int lang = oogie_game_lang();
+    if (lang != 1) {
+        OOGIE_MEM8(0x413145u) = (uint8_t)lang;
+        OOGIE_MEM32(0x3E2540u) = (uint32_t)lang;
+    }
+}
+void sub_00052A00_enter(void)
+{
+    int lang = oogie_game_lang();
+    if (lang != 1 && OOGIE_MEM32(g_esp + 4) != (uint32_t)lang) {
+        OOGIE_MEM8(0x413145u) = (uint8_t)lang;
+        OOGIE_MEM32(g_esp + 4) = (uint32_t)lang;
+    }
+}
+
+/* European text (#87). Verified 2026-10-31: the text decoder sub_00076430
+ * hands a byte below 0x80 on as a one-byte code, and the glyph lookup
+ * sub_00037FF0(code) ([esp+4]; table [0x3DA314] = 0x266AD8) draws one-byte
+ * codes from the Japanese 24x24 grid of font sheet 0. The European message
+ * files are compiled for the European program's own font: letters and digits
+ * as one-byte codes (A..Z = 0x2F..0x48, a..z = 0x49..0x62, space 08), accented
+ * letters as one-byte 0x63..0x7F or two-byte 0x80xx codes that are other
+ * letters in the US font (0x801F is 'F' there, ß in Europe). So French text
+ * drew as scrambled kana. The US font has no accented letters at all
+ * (scripts/font_sheet.py: build_out/font/us_font0/1.png), and the stm_data
+ * jfont1..6.lz files are Japanese fonts (unpacked: 'bft' table + two DDS of
+ * kana and kanji), not the European one. The European code table was worked
+ * out from the game's own files: every compiled X_<lang>.bms lined up with its
+ * source X_<lang>.txt (scripts/eu_charmap.py, 6001 messages in French,
+ * German, Italian and Spanish; US codes from 1444 English ones). Here the
+ * lookup's code is changed to the US code of the same character, and an
+ * accented letter to its plain letter (é -> e, ü -> u, ß -> s), so the text
+ * reads in its language with the US font. Codes not in the table are left as
+ * they are. Codes marked (inferred) fill gaps in the observed sequences. */
+static uint16_t s_eu1[0x80], s_eu2[0x50];   /* one-byte, and 0x80xx, -> US code */
+static uint16_t oogie_us_char(char ch)
+{
+    if (ch >= 'A' && ch <= 'Z') return (uint16_t)(0x801A + (ch - 'A'));
+    if (ch >= 'a' && ch <= 'z') return (uint16_t)(0x8034 + (ch - 'a'));
+    if (ch >= '0' && ch <= '9') return (uint16_t)(0x8010 + (ch - '0'));
+    switch (ch) {
+    case ' ': return 0x8000;
+    case '-': return 0x8125;
+    case ':': return 0x8134;
+    case '!': return 0x8135;
+    case '?': return 0x8136;
+    case '(': return 0x8137;
+    case ')': return 0x8138;
+    case '\'': return 0x813D;
+    case ',': return 0x813E;
+    case '.': return 0x8147;
+    case '#': return 0x814F;
+    }
+    return 0;
+}
+static void oogie_eu_tables(void)
+{
+    /* one-byte codes 0x63..0x7F: â ê î ô û Â Ê Î Ô Û à è ì ò ù À È Ì Ò Ù
+     * á é í ó ú ý Á É Í (Ê Î Ô Û Ì Ò Ù ý Í inferred) */
+    static const char acc[] = "aeiouAEIOUaeiouAEIOUaeiouyAEI";
+    /* two-byte 0x8003..0x802E as plain characters, 0 = not known */
+    static const struct { uint8_t lo; char ch; } two[] = {
+        { 0x03, 'a' }, { 0x04, 'e' }, { 0x05, 'i' }, { 0x06, 'o' }, { 0x07, 'u' },   /* ä ë (ï) ö ü */
+        { 0x09, 'A' }, { 0x0A, 'E' }, { 0x0B, 'I' }, { 0x0C, 'O' }, { 0x0D, 'U' },   /* (Ä) Ë (Ï) Ö Ü */
+        { 0x13, 'n' }, { 0x14, 'N' }, { 0x17, 'c' }, { 0x18, 'C' },                  /* ñ (Ñ) ç Ç */
+        { 0x1F, 's' }, { 0x44, 's' }, { 0x25, 'o' },                                 /* ß (two codes) œ */
+        { 0x29, ' ' }, { 0x2A, ' ' },                                               /* ¡ ¿ */
+        { 0x2B, '\'' }, { 0x2D, ',' }, { 0x2E, '#' },
+    };
+    int c;
+    size_t k;
+    s_eu1[0x08] = 0x8000;
+    for (c = 0; c < 10; c++) s_eu1[0x0B + c] = (uint16_t)(0x8010 + c);
+    s_eu1[0x15] = oogie_us_char(':');
+    s_eu1[0x19] = oogie_us_char('-');
+    s_eu1[0x1C] = oogie_us_char(',');
+    s_eu1[0x1D] = oogie_us_char('.');
+    s_eu1[0x20] = oogie_us_char('(');
+    s_eu1[0x21] = oogie_us_char(')');
+    s_eu1[0x22] = oogie_us_char('!');
+    s_eu1[0x23] = oogie_us_char('?');
+    s_eu1[0x24] = s_eu1[0x25] = oogie_us_char('\'');     /* “ ” */
+    s_eu1[0x26] = oogie_us_char('-');                    /* ～ */
+    for (c = 0x2F; c <= 0x62; c++) s_eu1[c] = (uint16_t)(0x8000 | (c - 0x15));
+    for (c = 0; acc[c]; c++) s_eu1[0x63 + c] = oogie_us_char(acc[c]);
+    for (k = 0; k < sizeof two / sizeof two[0]; k++)
+        if (two[k].lo < 0x50) s_eu2[two[k].lo] = oogie_us_char(two[k].ch);
+}
+/* Where the code is translated (Verified, text.asm): the two glyph draw
+ * functions sub_000380A0 (called from the text drawer 0x795DE) and
+ * sub_00038380 (called through a pointer only) each look the glyph up
+ * themselves through [0x3DA314] with the code at [esp+0x24] (u16), and call
+ * no lookup; text widths go through sub_00037FF0(code at [esp+4]), called
+ * from the 0x764xx/0x76Cxx layout code and 0x79631. So each use of a code
+ * passes exactly one of the three, and is translated there once. Hooking
+ * only sub_00037FF0, or the decoder sub_00076430, left the map's text as it
+ * was (font_map_fr). */
+static uint32_t oogie_eu_code(uint32_t code)
+{
+    static int lang = -1;
+    if (lang < 0) {
+        lang = oogie_game_lang();
+        if (lang >= 3) oogie_eu_tables();
+    }
+    if (lang < 3) return code;
+    if (code < 0x80)
+        return s_eu1[code] ? s_eu1[code] : code;
+    if ((code & 0xFF00u) == 0x8000u && (code & 0xFFu) < 0x50 && s_eu2[code & 0xFFu])
+        return s_eu2[code & 0xFFu];
+    return code;
+}
+void sub_00037FF0_enter(void)
+{
+    OOGIE_MEM32(g_esp + 4) = oogie_eu_code(OOGIE_MEM32(g_esp + 4));
+}
+void sub_000380A0_enter(void)
+{
+    OOGIE_MEM16(g_esp + 0x24) = (uint16_t)oogie_eu_code(OOGIE_MEM16(g_esp + 0x24));
+}
+void sub_00038380_enter(void)
+{
+    OOGIE_MEM16(g_esp + 0x24) = (uint16_t)oogie_eu_code(OOGIE_MEM16(g_esp + 0x24));
+}
+
+static uint32_t guest_stdcalln(void (*fn)(void), uint32_t ret, int n, const uint32_t *args);
+extern void sub_00053820(void);
+extern void sub_00031430(void);
+static uint32_t oogie_guest_alloc(uint32_t size)
+{
+    uint32_t b[4];
+    b[0] = 4; b[1] = size; b[2] = 0; b[3] = 0;     /* as the game allocates for a file (0x45D40) */
+    return guest_stdcalln(sub_00053820, 0x000583C0u, 4, b);
+}
+/* game\stm_data\<name>.lz unpacked into game memory by the game's own
+ * unpacker: sub_00031430(stream, dest, refill, refill_arg) reads the type
+ * (8 bits, 2 = packed) and size (32 bits) through the stream's bit reader
+ * (sub_000310B0: [stream+8] word pointer, [+0xC] bit, refill only when
+ * [+0x14] is set) and runs sub_00031120; with the whole file in memory no
+ * refill is needed. Its address, or 0; *size gets the size. big: the
+ * kernel's contiguous memory (whole levels, more than the game's pool gives
+ * at once). */
+uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment);
+static uint32_t oogie_lz_unpack(const char *name, uint32_t *size, int big)
+{
+    char path[96];
+    FILE *fp;
+    long len;
+    uint32_t src, dst, strm, got, k;
+    snprintf(path, sizeof path, "game\\stm_data\\%s.lz", name);
+    fp = fopen(path, "rb");
+    if (!fp || fseek(fp, 0, SEEK_END) || (len = ftell(fp)) < 8 || len > 0x1000000 || fseek(fp, 0, SEEK_SET)) {
+        if (fp) fclose(fp);
+        return 0;
+    }
+    src = big ? xbox_ContiguousAlloc(((uint32_t)len + 7u) & ~3u, 4096) : oogie_guest_alloc(((uint32_t)len + 7u) & ~3u);
+    strm = oogie_guest_alloc(0x40);
+    if (!src || !strm) { fclose(fp); return 0; }
+    got = (uint32_t)fread((void *)((uintptr_t)src + g_xbox_mem_offset), 1, (size_t)len, fp);
+    fclose(fp);
+    *size = OOGIE_MEM8(src + 1) | OOGIE_MEM8(src + 2) << 8 | (uint32_t)OOGIE_MEM8(src + 3) << 16
+          | (uint32_t)OOGIE_MEM8(src + 4) << 24;
+    if (got != (uint32_t)len || OOGIE_MEM8(src) != 2 || !*size || *size > 0x2000000u
+            || !(dst = big ? xbox_ContiguousAlloc((*size + 7u) & ~3u, 4096) : oogie_guest_alloc((*size + 7u) & ~3u)))
+        return 0;
+    for (k = 0; k < 0x40; k += 4) OOGIE_MEM32(strm + k) = 0;
+    OOGIE_MEM32(strm) = 0xFFFFFFFFu;
+    OOGIE_MEM32(strm + 4) = src;
+    OOGIE_MEM32(strm + 8) = src;
+    {
+        uint32_t a[4];
+        a[0] = strm; a[1] = dst; a[2] = 0; a[3] = 0;
+        got = guest_stdcalln(sub_00031430, 0x000583C0u, 4, a);
+    }
+    return got == *size ? dst : 0;
+}
+/* Test only: OOGIE_LZ_DUMP=0000,0100,... writes those unpacked files to
+ * build_out\lz\<name>.bin once the title screen is up (for reading the
+ * compiled text in the levels). Run from the main thread's task runner. */
+void sub_000583C0_enter(void)
+{
+    static int dumped;
+    const char *e;
+    char list[512], *tok, *ctx = NULL;
+    uint32_t sa = g_eax, sc = g_ecx, sd = g_edx;
+    if (dumped || !OOGIE_MEM32(0x2C8900u + (0xBCu + (uint32_t)oogie_game_lang()) * 0x20u + 0x18u))
+        return;
+    dumped = 1;
+    e = getenv("OOGIE_LZ_DUMP");
+    if (!e || !*e) return;
+    snprintf(list, sizeof list, "%s", e);
+    CreateDirectoryA("build_out", NULL);
+    CreateDirectoryA("build_out\\lz", NULL);
+    for (tok = strtok_s(list, ",", &ctx); tok; tok = strtok_s(NULL, ",", &ctx)) {
+        uint32_t size = 0, a = oogie_lz_unpack(tok, &size, 1);
+        char out[128];
+        FILE *fp;
+        snprintf(out, sizeof out, "build_out\\lz\\%s.bin", tok);
+        if (a && (fp = fopen(out, "wb")) != NULL) {
+            fwrite((void *)((uintptr_t)a + g_xbox_mem_offset), 1, size, fp);
+            fclose(fp);
+        }
+        fprintf(stderr, "[OOGIE] LZ dump %s: %s (%u bytes)\n", tok, a ? out : "failed", size);
+    }
+    fflush(stderr);
+    g_eax = sa; g_ecx = sc; g_edx = sd;
+}
+
 /* ── Oogie: test switch, start at any chapter (dev cycle 4) ──────
  *
  * Verified (docs/RE_CHAPTER_SELECT.md, side session; text 0x40950):

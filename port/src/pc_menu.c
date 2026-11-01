@@ -147,6 +147,9 @@ static int preset_match(void)
     return 0;
 }
 static const Opt o_rumble[] = { { "Off", 0 }, { "Normal", 1 }, { "Strong", 2 } };
+/* Xbox language numbers (recomp_manual.c sub_0019C200_enter) */
+static const Opt o_lang[] = { { "English", 1 }, { "French (Francais)", 4 }, { "German (Deutsch)", 3 },
+    { "Spanish (Espanol)", 5 }, { "Italian (Italiano)", 6 } };
 static Opt o_volume[21];
 static Opt o_fov[15];
 static Opt o_monitor[9];  static char s_mon_names[9][64];  static int s_nmon;
@@ -175,6 +178,10 @@ static Item s_items[] = {
       IT_CHOICE, &g_pc.side_fill, o_side, 3, 1, "Display", "side_fill" },
     { P_DISPLAY, "Skip Intro Logos", "Skip the company logos film when the game starts.",
       IT_CHOICE, &g_pc.skip_intro, o_onoff, 2, 0, "Display", "skip_intro" },
+    { P_DISPLAY, "Language", "Menus and text in this language (accents show as plain letters); voices stay English. Applies at the next start.",
+      IT_CHOICE, &g_pc.language, o_lang, 5, 1, "Display", "language", NULL, 1 },
+    { P_DISPLAY, "Discord Status", "Show the chapter you are playing on your Discord profile (Discord app on this PC).",
+      IT_CHOICE, &g_pc.discord, o_onoff, 2, 1, "Discord", "rich_presence" },
     { P_DISPLAY, "HUD at Screen Edges", "Widescreen: health and gauges sit in the corners of your screen.",
       IT_CHOICE, &g_pc.hud_edges, o_onoff, 2, 1, "Display", "hud_edges" },
     { P_DISPLAY, "Field of View", "How wide the game camera sees. 100% is the original.",
