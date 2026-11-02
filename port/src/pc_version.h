@@ -3,5 +3,5 @@
  * says which build it came from. Change it here for each release. */
 #ifndef PC_VERSION_H
 #define PC_VERSION_H
-#define OOGIE_VERSION "0.2.5"
+#define OOGIE_VERSION "0.2.6"
 #endif

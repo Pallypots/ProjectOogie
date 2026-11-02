@@ -2,7 +2,7 @@
 # with attack and move presses, and take a memory snapshot plus a window shot
 # every -Every seconds (build_out\mem\<Name>_NNN.bin, logs\live\<Name>_NNN.png).
 # Used to find health and money (scripts\memdiff.py). Stops the game it started.
-param([int]$Chapter = 2, [string]$Name = "mc2", [int]$Minutes = 3, [int]$Every = 6, [string]$Settings = "")
+param([int]$Chapter = 2, [string]$Name = "mc2", [int]$Minutes = 3, [int]$Every = 6, [string]$Settings = "", [switch]$NoShot)
 $Root = Split-Path -Parent $PSScriptRoot
 if ($Settings) { $env:OOGIE_TEST_SETTINGS = (Resolve-Path $Settings).Path }   # e.g. logs\settings_cheats.ini
 if (Get-Process oogie_recomp -ErrorAction SilentlyContinue) { "a game is already running; not starting"; exit 1 }
@@ -21,7 +21,7 @@ while (((Get-Date) - $t0).TotalMinutes -lt $Minutes -and -not $p.HasExited) {
         $next += $Every
         $tag = "{0}_{1:D3}" -f $Name, $i
         py -3 (Join-Path $Root "scripts\memscan.py") snap $tag 0x3B2000 0x4000000 | Out-Null
-        powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "window_shot.ps1") -Name $tag | Out-Null
+        if (-not $NoShot) { powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "window_shot.ps1") -Name $tag | Out-Null }
         "{0,4}s {1}" -f [int]((Get-Date) - $t0).TotalSeconds, $tag
         $i++
     }

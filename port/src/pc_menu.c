@@ -274,11 +274,19 @@ static Item s_items[] = {
     PADB("D-pad Right", "DpadRight", "DRight"),
 #undef PADB
 
-    /* Cheats (GitHub #6): applied while the game draws its HUD (recomp_manual.c, sub_000A8D10_enter) */
-    { P_CHEATS, "Infinite Health", "Jack's health stays full: hits and falls do no harm.",
+    /* Cheats (GitHub #6): recomp_manual.c, oogie_cheats_apply (every frame) and the hooks after it */
+    { P_CHEATS, "Infinite Health", "Hits and falls take no health: the bar stays full and Jack cannot die.",
       IT_CHOICE, &g_pc.cheat_health, o_onoff, 2, 0, "Cheats", "infinite_health" },
-    { P_CHEATS, "Max Souls", "Souls stay at 999, the most the game holds: buy anything at the Witches' Shop. Saves keep them.",
+    { P_CHEATS, "Max Souls", "Your souls stay at 99999, the most the game holds: buy anything at the Witches' Shop. Saves keep them.",
       IT_CHOICE, &g_pc.cheat_souls, o_onoff, 2, 0, "Cheats", "max_souls" },
+    { P_CHEATS, "Max Exclamation Points", "The chapter's exclamation points stay at 999, the most it counts: top marks for scares.",
+      IT_CHOICE, &g_pc.cheat_exclaim, o_onoff, 2, 0, "Cheats", "max_exclamation_points" },
+    { P_CHEATS, "Freeze Time", "The chapter clock stops while this is on: the Time grade counts only the time it was off.",
+      IT_CHOICE, &g_pc.cheat_freeze, o_onoff, 2, 0, "Cheats", "freeze_time" },
+    { P_CHEATS, "One-Shot Kill", "Jack's attacks hit for 9999: enemies go down in one hit. Bosses too: turn it off if a boss fight stalls.",
+      IT_CHOICE, &g_pc.cheat_oneshot, o_onoff, 2, 0, "Cheats", "one_shot_kill" },
+    { P_CHEATS, "Super Speed", "Jack runs twice as fast.",
+      IT_CHOICE, &g_pc.cheat_speed, o_onoff, 2, 0, "Cheats", "super_speed" },
     { P_MODS, s_mods_status, NULL, IT_INFO },
     { P_MODS, "Open Mods Folder", "Mods go in mods\\<mod name>\\files\\ (game files) and \\textures\\ (texture packs).",
       IT_ACTION, NULL, NULL, 0, 0, NULL, NULL, NULL, 0, act_open_mods },

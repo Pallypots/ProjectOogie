@@ -2005,6 +2005,55 @@ static void ds_deaf_add(uint32_t v)
     static volatile LONG n;
     if (!ds_deaf(v)) s_ds_deaf[(InterlockedIncrement(&n) - 1) % OOGIE_DS_DEAF_N] = v;
 }
+/* #78c (2026-11-02, GitHub #3, Steam Deck freeze): a DirectSound voice must
+ * not be freed while it is still on one of its owner's DPC lists. The DPC
+ * (sub_0020821C) walks the owner's stopped-voice list ([owner+0x4A0], the
+ * voice's link at +0x54) and three more lists ([owner+0x488/+0x490/+0x498],
+ * link at +0x4C), calling [vtable+0x18] on each voice. A voice freed while
+ * still queued (a stop forced before the DPC ran, #78; frequent under Proton,
+ * #88) left the DPC calling into freed memory: [PURECALL] at 0x20828E, then
+ * calls to 0xC3AB0000 by the million and a frozen game. sub_0020BB26 is the
+ * voice destructor (vtable 0x27C4B0 -> base 0x27C444, releases [+0x70] and
+ * the owner [+8]); on entry the voice is taken off any of those lists it is
+ * still on (as RemoveEntryList would), so the DPC can never reach it. Guest
+ * threads run one at a time (#61): the DPC cannot be mid-walk. Bounded
+ * walks; OOGIE_DS_UNLINK=0: the old behaviour. */
+static int ds_unlink_from(uint32_t head, uint32_t link)
+{
+    uint32_t e = OOGIE_MEM32(head), n = 0;
+    while (e && e != head && n++ < 512) {
+        if (e == link) {
+            uint32_t f = OOGIE_MEM32(link), b = OOGIE_MEM32(link + 4);
+            OOGIE_MEM32(b) = f;
+            OOGIE_MEM32(f + 4) = b;
+            OOGIE_MEM32(link) = link;
+            OOGIE_MEM32(link + 4) = link;
+            return 1;
+        }
+        e = OOGIE_MEM32(e);
+    }
+    return 0;
+}
+void sub_0020BB26_enter(void)
+{
+    static int on = -1;
+    uint32_t v = g_ecx, owner, k;
+    int hit = 0;
+    if (on < 0) { const char *e = getenv("OOGIE_DS_UNLINK"); on = !(e && *e == '0'); }
+    if (!on || v < 0x10000) return;
+    owner = OOGIE_MEM32(v + 8);
+    if (owner < 0x10000) return;
+    if (OOGIE_MEM32(v + 0x54) && ds_unlink_from(owner + 0x4A0, v + 0x54)) hit |= 1;
+    for (k = 0; k < 3; k++)
+        if (OOGIE_MEM32(v + 0x4C) && ds_unlink_from(owner + 0x488 + 8 * k, v + 0x4C)) hit |= 2;
+    if (hit) {
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 20 || (n & 255) == 0)
+            fprintf(stderr, "[DSOUND] voice 0x%08X freed while still on the DPC's %s list: taken off (%ld so far)\n",
+                    v, hit & 1 ? "stopped-voice" : "voice", (long)n);
+    }
+}
+
 void sub_0020B669(void)
 {
     static int old = -1;
@@ -2668,6 +2717,23 @@ void recomp_icall_not_code_log(uint32_t va)
                     "(null or wild function pointer, at call #%llu)\n",
             va, (unsigned long long)hits[i],
             (unsigned long long)g_icall_count);
+    /* The first time an address is seen: where the call came from (the guest
+     * stack, whose return addresses name the game code, and the host chain,
+     * whose sub_XXXXXXXX frames are the guest functions; scripts\symbolize.py
+     * turns the offsets into names). #78c: the DPC's walk into a freed voice. */
+    if (hits[i] == 1) {
+        void *bt[24];
+        USHORT nf = RtlCaptureStackBackTrace(0, 24, bt, NULL), f;
+        uintptr_t mod = (uintptr_t)GetModuleHandleA(NULL);
+        fprintf(stderr, "[ICALL]   guest stack:");
+        for (f = 0; f < 12; f++) fprintf(stderr, " %08X", OOGIE_MEM32(g_esp + 4u * f));
+        fprintf(stderr, "\n[ICALL]   host frames (exe offsets):");
+        for (f = 0; f < nf; f++) {
+            uintptr_t h = (uintptr_t)bt[f];
+            if (h >= mod && h < mod + 0x4000000u) fprintf(stderr, " +%llX", (unsigned long long)(h - mod));
+        }
+        fprintf(stderr, "\n");
+    }
     fflush(stderr);
 }
 
@@ -3915,13 +3981,109 @@ static int pump_finish(uint32_t self, uint32_t c)
  * are applied once per frame from the GPU fence wait (sub_001D78D0_enter);
  * the HUD drawer sub_000A8D10 is not called every frame (ch1c). Health is
  * only set while the maximum is a real one (1..100), so menus are untouched. */
+/* Every frame (sub_001D78D0_enter). Addresses: docs/REVERSE_ENGINEERING.md,
+ * "Jack's stats and the chapter grades". The wallet and the tallies are
+ * held where the game keeps them, so its own HUD, shop and results show the
+ * values; the game's caps are kept (99999 souls, 999 exclamation points). */
 void oogie_cheats_apply(void)
 {
+    static int frozen;
+    static uint32_t clk_lo, clk_hi;
     if (g_pc.cheat_health) {
         uint32_t mx = OOGIE_MEM32(0x420C24);
         if (mx >= 1 && mx <= 100 && OOGIE_MEM32(0x420C28) < mx)
             OOGIE_MEM32(0x420C28) = mx;
     }
-    if (g_pc.cheat_souls && OOGIE_MEM32(0x413188) != 999)
-        OOGIE_MEM32(0x413188) = 999;
+    /* the soul wallet: sub_000D1F40 adds and spends, 0..99999 (0x1869F);
+     * 0x420C60 next to it is the lifetime total, left alone */
+    if (g_pc.cheat_souls && OOGIE_MEM32(0x420C64) != 99999)
+        OOGIE_MEM32(0x420C64) = 99999;
+    /* the chapter's exclamation points: sub_000414A0 adds, 0..999 */
+    if (g_pc.cheat_exclaim && OOGIE_MEM32(0x41318C) != 999)
+        OOGIE_MEM32(0x41318C) = 999;
+    /* the chapter clock, a 64-bit tick count (sub_0019C030 reads it as the
+     * chapter time, sub_0019C0B0 sets it when a save loads): held at the
+     * value it had when the cheat came on. A smaller value means the game
+     * started a new chapter's clock: that one is held instead. */
+    /* Super Speed: Jack's character object (pointer at 0x420E98) holds his
+     * position at +0x60 (x), +0x64 (y), +0x68 (z) (sub_000CFA60 saves it).
+     * Each frame the step he just took on the ground plane is taken once more,
+     * so he covers twice the distance; his own collision runs again next
+     * frame. Only ordinary steps (0.05-2 units a frame; walking is about 0.65,
+     * mv2): a teleport, a cut or a respawn is left alone. A first try doubled
+     * his step at +0xD8/+0xE0, which the game works out afresh each frame
+     * (mv3: no change). */
+    {
+        static uint32_t last_jack;
+        static float px, pz;
+        uint32_t jack = OOGIE_MEM32(0x420E98);
+        if (g_pc.cheat_speed && ((jack >= 0x10000 && jack < 0x4000000) || (jack >= 0x80000000u && jack < 0x84000000u))) {
+            volatile float *x = (volatile float *)((uintptr_t)(jack + 0x60) + g_xbox_mem_offset);
+            volatile float *z = (volatile float *)((uintptr_t)(jack + 0x68) + g_xbox_mem_offset);
+            float nx = *x, nz = *z, dx = nx - px, dz = nz - pz, d2 = dx * dx + dz * dz;
+            if (jack == last_jack && d2 > 0.0025f && d2 < 4.0f && nx == nx && nz == nz) {
+                nx += dx; nz += dz;
+                *x = nx; *z = nz;
+            }
+            px = nx; pz = nz;
+            last_jack = jack;
+        } else
+            last_jack = 0;
+    }
+    if (g_pc.cheat_freeze) {
+        uint32_t lo = OOGIE_MEM32(0x402FB0), hi = OOGIE_MEM32(0x402FB4);
+        uint64_t now = ((uint64_t)hi << 32) | lo, held = ((uint64_t)clk_hi << 32) | clk_lo;
+        if (!frozen || now < held) { clk_lo = lo; clk_hi = hi; frozen = 1; }
+        else if (now != held) { OOGIE_MEM32(0x402FB0) = clk_lo; OOGIE_MEM32(0x402FB4) = clk_hi; }
+    } else
+        frozen = 0;
+}
+
+/* Infinite Health at the source (GitHub #6, 0.2.5 report: the bar still
+ * went down). sub_000CF950(stats, damage) is a hit on Jack: it adds the
+ * damage to the chapter's damage tally (0x413188, the Damage grade), takes
+ * it off his health (stats + 0xD68 = 0x420C28) and calls the death routine
+ * at 0. sub_000CF810(stats, 1, value) sets his health directly (falls). With
+ * the cheat a hit does no damage and health is never set lower, so the bar
+ * never moves; the refill above stays as a backstop. */
+void sub_000CF950_enter(void)
+{
+    if (g_pc.cheat_health && OOGIE_MEM32(g_esp + 4) == 0x41FEC0 && (int32_t)OOGIE_MEM32(g_esp + 8) > 0)
+        OOGIE_MEM32(g_esp + 8) = 0;
+}
+
+/* One-Shot Kill. Jack's hit reaches the enemy's own damage routine through
+ * its "on hit" record (sub_000EE010 -> [record + 0x2C], e.g. sub_00112AA0 ->
+ * [component + 0x29C], the skeleton's sub_0013AD50), which takes the hit's
+ * damage off the enemy with sub_001131E0(component, damage): health is the
+ * float at component + 0x274, and at 0 or below the caller runs the death
+ * (sub_00113040(..., 8)). With the cheat any hit that does damage takes all
+ * of the health that is left. Seven enemy routines call it. A first try
+ * raised the damage in the hit record (sub_000C5D20): the hits arrived as
+ * 9999 but the enemies took several hits all the same (os4, os10). */
+void sub_001131E0_enter(void)
+{
+    static int logn = -1;
+    uint32_t comp = OOGIE_MEM32(g_esp + 4);
+    float dmg, hp;
+    if (comp < 0x10000) return;
+    memcpy(&dmg, (const void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), 4);
+    memcpy(&hp, (const void *)((uintptr_t)(comp + 0x274) + g_xbox_mem_offset), 4);
+    if (logn < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); logn = (e && *e == '1') ? 40 : 0; }
+    if (logn > 0) {   /* test: OOGIE_CHEAT_LOG=1 logs the first 40 */
+        logn--;
+        fprintf(stderr, "[CHEAT] enemy %08X health %.1f, hit %.1f -> %.1f\n", comp, hp, dmg,
+                g_pc.cheat_oneshot && dmg > 0 && hp == hp && hp > 0 ? hp + 1.0f : dmg);
+    }
+    if (g_pc.cheat_oneshot && dmg > 0 && hp == hp && hp > 0 && hp < 1e6f) {
+        dmg = hp + 1.0f;
+        memcpy((void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), &dmg, 4);
+    }
+}
+
+void sub_000CF810_enter(void)
+{
+    if (g_pc.cheat_health && OOGIE_MEM32(g_esp + 4) == 0x41FEC0 && OOGIE_MEM32(g_esp + 8) == 1
+        && (int32_t)OOGIE_MEM32(g_esp + 12) < (int32_t)OOGIE_MEM32(0x420C28))
+        OOGIE_MEM32(g_esp + 12) = OOGIE_MEM32(0x420C28);
 }

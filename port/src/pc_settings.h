@@ -56,7 +56,11 @@ typedef struct {
     int pause_bg;        /* switching away opens the settings menu (pauses) */
     int skip_intro;      /* press Start through the company logos film */
     int cheat_health;    /* Cheats page (GitHub #6): Jack's health kept full (recomp_manual.c) */
-    int cheat_souls;     /* Cheats page: souls kept at the game's cap, 999 */
+    int cheat_souls;     /* Cheats page: the soul wallet kept at the game's cap, 99999 */
+    int cheat_exclaim;   /* Cheats page: the chapter's exclamation points kept at 999 */
+    int cheat_freeze;    /* Cheats page: the chapter clock (Time grade) stands still */
+    int cheat_oneshot;   /* Cheats page: Jack's hits do 9999 damage */
+    int cheat_speed;     /* Cheats page: Jack moves twice as far each frame */
     int discord;         /* Discord Rich Presence: chapter on the Discord profile (pc_discord.c) */
     int language;        /* the console language the game sees: 1 English, 3 German, 4 French,
                             5 Spanish, 6 Italian (Xbox numbers; recomp_manual.c sub_0019C200_enter) */

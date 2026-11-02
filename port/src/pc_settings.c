@@ -89,6 +89,10 @@ static const char s_default_ini[] =
 "; 1 on, 0 off; also F1 > Cheats, at once. Saves made while on keep the souls.\n"
 "infinite_health = 0\n"
 "max_souls = 0\n"
+"max_exclamation_points = 0\n"
+"freeze_time = 0\n"
+"one_shot_kill = 0\n"
+"super_speed = 0\n"
 "\n"
 "[Controller]\n"
 "; Xbox 360, Xbox One and Xbox Series pads (wired or Bluetooth) always work.\n"
@@ -448,6 +452,10 @@ void pc_config_load(void)
     g_pc.discord = pc_settings_int("Discord", "rich_presence", 1) != 0;
     g_pc.cheat_health = pc_settings_int("Cheats", "infinite_health", 0) != 0;
     g_pc.cheat_souls = pc_settings_int("Cheats", "max_souls", 0) != 0;
+    g_pc.cheat_exclaim = pc_settings_int("Cheats", "max_exclamation_points", 0) != 0;
+    g_pc.cheat_freeze = pc_settings_int("Cheats", "freeze_time", 0) != 0;
+    g_pc.cheat_oneshot = pc_settings_int("Cheats", "one_shot_kill", 0) != 0;
+    g_pc.cheat_speed = pc_settings_int("Cheats", "super_speed", 0) != 0;
     g_pc.language = pc_settings_int("Display", "language", 1);
     if (g_pc.language != 3 && g_pc.language != 4 && g_pc.language != 5 && g_pc.language != 6)
         g_pc.language = 1;

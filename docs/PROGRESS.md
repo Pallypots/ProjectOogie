@@ -375,3 +375,11 @@ See docs/IMPROVEMENT_PLAN.md.
 - 0.2.4 released (cheat menu, #6).
 - #7: the player's game ran about 120 loops a second during films with the cap at 60 (KNOWN_ISSUES #90). Pacing guard in d3d11_backend.c: if vsync lets the game run above the cap for three seconds, the timer paces. 30 fps relabelled as half speed.
 - Release notes: docs/RELEASE_NOTES_0.2.5.md; reply draft trailer/v025_issue7_reply.md.
+
+## Dev cycle 12: 2026-11-02 (GitHub #6 cheats corrected and extended, #3 Steam Deck freeze)
+
+- #6: the player found Max Souls did nothing and Infinite Health still showed damage. 0x413188 turned out to be the chapter's damage tally, not the souls; the wallet is 0x420C64 (KNOWN_ISSUES #93, REVERSE_ENGINEERING "Jack's stats and the chapter grades"). All six cheats (Infinite Health, Max Souls, Max Exclamation Points, Freeze Time, One-Shot Kill, Super Speed) Verified in game.
+- #3: new Deck logs (still 0.2.2) show the #78 freeze: a DirectSound voice freed while still on the DPC's list. Guard in the voice destructor sub_0020BB26 (KNOWN_ISSUES #92). #91 (game-over sound) confirmed fixed by the player.
+- Test tools: scripts/hitscan.py, hitrec.py, moverec.py, compdump.py, symbolize.py; mem_poke.ps1 -Frames/-Reads (game frames, no window shots).
+- The high frame rate prototype (GPU replay; replay 1 ms instead of 8-10; still too slow on the test laptop, whose own frame already takes 18 ms) is kept out of the release: build_out/research/interp/ (patch, notes, test rows). Next step there: move the in-between work to a second thread.
+- Release notes: docs/RELEASE_NOTES_0.2.6.md; reply drafts trailer/v026_issue6_reply.md, trailer/v026_issue3_reply.md (not posted).
