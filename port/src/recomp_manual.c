@@ -2097,6 +2097,23 @@ void sub_0020B669(void)
          * (GetTickCount's 2 ms was up to one 15.6 ms tick): forced at once,
          * the DPC freed-voice crash below came within the day. */
         lim = ds_deaf(v) && s_ds_stop_ms > 16 ? 16 : s_ds_stop_ms;
+        /* GitHub #9 (2026-11-04, Steam Deck: Jack's singing cuts in and
+         * out): under Proton the "stopped" report of the same pooled voices
+         * never comes, about 4 forced stops a second in the Chapter 5 dance
+         * (player logs: 20 -> 2048 in 8 min, underruns alongside; Windows
+         * logs: none), and while this loop waits the APU makes no sound at
+         * all. There a deaf voice waits 4 ms instead of 16; the #92 unlink
+         * above keeps a freed voice off the DPC's lists, the #78 crash's
+         * cause. OOGIE_DS_DEAF_MS=N sets it. */
+        {
+            static int deaf_ms = -1;
+            if (deaf_ms < 0) {
+                const char *e = getenv("OOGIE_DS_DEAF_MS");
+                HMODULE nt = GetModuleHandleA("ntdll.dll");
+                deaf_ms = e && *e ? atoi(e) : (nt && GetProcAddress(nt, "wine_get_version") ? 4 : 16);
+            }
+            if (ds_deaf(v) && lim > deaf_ms) lim = deaf_ms;
+        }
         QueryPerformanceFrequency(&qf);
         QueryPerformanceCounter(&q0);
         while (OOGIE_MEM16(v + 0x12) & 0x8000) {
@@ -2141,6 +2158,25 @@ void sub_0020B669(void)
         }
         if (was) xbox_KfRaiseIrql(was);
         if (mine) s_ds_poll_tid = 0;
+        {   /* GitHub #9 (Steam Deck: singing cuts out): every 10 s with a
+             * stop that waited, stops / forced / ms waited in all / longest */
+            static LONG n_stop, n_forced;
+            static double ms_all, ms_max;
+            static DWORD t_last;
+            LARGE_INTEGER qe;
+            double ms;
+            DWORD now = GetTickCount();
+            QueryPerformanceCounter(&qe);
+            ms = (double)(qe.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+            n_stop++; n_forced += cut; ms_all += ms; if (ms > ms_max) ms_max = ms;
+            if (!t_last) t_last = now;
+            if (now - t_last >= 10000) {
+                if (ms_all >= 1.0)
+                    fprintf(stderr, "[DSOUND] last %.0f s: %ld voice stops, %ld forced, %.0f ms waited, longest %.1f ms\n",
+                            (now - t_last) / 1000.0, n_stop, n_forced, ms_all, ms_max);
+                n_stop = n_forced = 0; ms_all = ms_max = 0; t_last = now;
+            }
+        }
     }
     g_ecx = v;
     g_esp += 4;                                 /* ret */
@@ -3134,6 +3170,61 @@ void sub_00040950_enter(void)
         fprintf(stderr, "[TEST] OOGIE_START_CHAPTER: New Game starts chapter %d\n", target);
         fflush(stderr);
     }
+    /* OOGIE_START_WORLD=G,A,S,E (boss tests, 0.2.7): the chapter about to
+     * start gets world group G, area A (the stm_data\GGAA.lz level, e.g.
+     * 0,9 = 0009) and scene S, entry E, written into its row of the table at
+     * 0x2C5AA0 (+0 -> [0x41316C], +4 -> [0x413170], +8/+0xC ->
+     * sub_000DDEF0). Once per session. */
+    {
+        static int wdone;
+        const char *w = getenv("OOGIE_START_WORLD");
+        int g, a, s, e, ch = (int)OOGIE_MEM32(g_esp + 4);
+        if (!wdone && w && *w && ch >= 1 && ch <= 24 && sscanf(w, "%i,%i,%i,%i", &g, &a, &s, &e) == 4) {
+            uint32_t row = 0x2C5AA0u + (uint32_t)ch * 16u;
+            wdone = 1;
+            OOGIE_MEM32(row) = (uint32_t)g; OOGIE_MEM32(row + 4) = (uint32_t)a;
+            OOGIE_MEM32(row + 8) = (uint32_t)s; OOGIE_MEM32(row + 12) = (uint32_t)e;
+            fprintf(stderr, "[TEST] OOGIE_START_WORLD: chapter %d starts in %02X%02X, scene %d entry %d\n", ch, g, a, s, e);
+            fflush(stderr);
+        }
+    }
+}
+
+/* ── Oogie: test switch, start in any scene (boss tests, 0.2.7) ──────────
+ *
+ * Verified (text 0xDDEF0): sub_000DDEF0(scene, entry) books the next scene
+ * and its entry point in [0x3EDCCC] / [0x3EDCD0] (only when none is booked);
+ * sub_00040950 calls it with the chapter's pair from the table at 0x2C5AA0
+ * (+8, +0xC), doors and warps call it too. OOGIE_START_SCENE=S,E replaces the
+ * first booking of the session (the chapter start), so a test can begin in a
+ * boss arena; OOGIE_WARP_LOG=1 logs every booking. Off by default. */
+void sub_000DDEF0_enter(void)
+{
+    /* The chapter's pair is booked twice at a New Game (wp1: from 0x409AA,
+     * cancelled from 0x19E514, booked again from 0xDB3A5): each booking of
+     * that first pair is replaced, three at most. */
+    static int init, n, s = -1, e = -1, log;
+    static uint32_t os = 0xFFFFFFFFu, oe;
+    uint32_t a = OOGIE_MEM32(g_esp + 4), b = OOGIE_MEM32(g_esp + 8);
+    if (!init) {
+        const char *v = getenv("OOGIE_START_SCENE"), *l = getenv("OOGIE_WARP_LOG");
+        init = 1;
+        if (v && *v) sscanf(v, "%i,%i", &s, &e);
+        log = l && *l == '1';
+    }
+    if (log)
+        fprintf(stderr, "[WARP] scene %d entry %d (from %08X)\n", (int)a, (int)b, OOGIE_MEM32(g_esp));
+    if (s >= 0 && n < 3 && (int)a >= 0) {
+        if (os == 0xFFFFFFFFu) { os = a; oe = b; }
+        if (a == os && b == oe) {
+            n++;
+            OOGIE_MEM32(g_esp + 4) = (uint32_t)s;
+            OOGIE_MEM32(g_esp + 8) = (uint32_t)(e < 0 ? 0 : e);
+            fprintf(stderr, "[TEST] OOGIE_START_SCENE: scene %d entry %d instead of %u/%u\n", s, e < 0 ? 0 : e, a, b);
+            log = log ? log : 2;
+        }
+    }
+    if (log) fflush(stderr);
 }
 
 /* ── Oogie: the D3D fence wait gives the CPU up (dev cycle 4, #72) ─────
@@ -4001,6 +4092,10 @@ void oogie_cheats_apply(void)
     /* the chapter's exclamation points: sub_000414A0 adds, 0..999 */
     if (g_pc.cheat_exclaim && OOGIE_MEM32(0x41318C) != 999)
         OOGIE_MEM32(0x41318C) = 999;
+    /* the chapter's best combo: sub_00041480 keeps the larger; the running
+     * combo (u16 at 0x37EEBE, sub_00025D50) stops at 999 */
+    if (g_pc.cheat_combo && OOGIE_MEM32(0x413184) != 999)
+        OOGIE_MEM32(0x413184) = 999;
     /* the chapter clock, a 64-bit tick count (sub_0019C030 reads it as the
      * chapter time, sub_0019C0B0 sets it when a save loads): held at the
      * value it had when the cheat came on. A smaller value means the game
@@ -4080,6 +4175,192 @@ void sub_001131E0_enter(void)
         memcpy((void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), &dmg, 4);
     }
 }
+
+/* One-Shot Kill for every other enemy kind (GitHub #6, 0.2.6 report: only
+ * skeletons died in one hit). sub_00112AA0 sends a hit to the routine in
+ * [component + 0x29C]; the game sets 23 different ones (text.asm, the
+ * "mov [reg + 0x29c], imm" stores). Each is routine(target, component, hit):
+ * health is the float at component + 0x274 and the damage is the float at
+ * hit + 0xC, which most of them copy and take off health themselves
+ * (e.g. sub_001480E0, subss at 0x00148128). The hit is a stack copy in the
+ * caller (sub_000C5D20 and others: lea reg, [esp + n]), so it can be raised
+ * without touching the game's attack tables. A hit with no damage is left
+ * alone; the skeleton's sub_0013AD50 works out its own damage and is
+ * covered by sub_001131E0_enter above. */
+static void oneshot_hit(void)
+{
+    static int logn = -1;
+    uint32_t comp = OOGIE_MEM32(g_esp + 8), hit = OOGIE_MEM32(g_esp + 12);
+    float dmg, hp, big;
+    if (!g_pc.cheat_oneshot || comp < 0x10000 || hit < 0x10000) return;
+    memcpy(&dmg, (const void *)((uintptr_t)(hit + 0xC) + g_xbox_mem_offset), 4);
+    memcpy(&hp, (const void *)((uintptr_t)(comp + 0x274) + g_xbox_mem_offset), 4);
+    if (logn < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); logn = (e && *e == '1') ? 60 : 0; }
+    if (logn > 0) {
+        logn--;
+        fprintf(stderr, "[CHEAT] routine %08X enemy %08X health %.1f, hit %.1f\n",
+                OOGIE_MEM32(comp + 0x29C), comp, hp, dmg);
+    }
+    if (!(dmg > 0) || !(hp > 0) || hp > 1e6f) return;
+    big = hp * 4.0f + 9999.0f;   /* room for a routine that scales the damage down */
+    if (dmg < big)
+        memcpy((void *)((uintptr_t)(hit + 0xC) + g_xbox_mem_offset), &big, 4);
+}
+/* One-Shot Kill for bosses (GitHub #6, 0.2.7-test1 report: ghosts die, the
+ * Chapter 1 shadow does not). Bosses (actor category 3, made by
+ * sub_000F37B0) have their own "on hit" functions instead of sub_00112AA0;
+ * each passes Jack's damage to sub_000F3BF0(target, damage, flags), cdecl,
+ * which adds it to the pending damage at rec5 + 0x5C (rec5 = the target's
+ * record 5, sub_0001D960). Each boss's update truncates it to an int, takes
+ * it off its health and runs its own defeat at 0 (shadow sub_00107940,
+ * Casino Oogie sub_000F0750, Lock/Shock/Barrel sub_000F8C50, bathtub
+ * sub_000FD870, Mega Oogie sub_00101EE0). Only the calls that carry Jack's
+ * hits are raised, by their return address; the dance damage (0xEA6AB,
+ * flag 2), the robots and devices (flag 4) and Finkelstein's script
+ * (0xF4B86) are left alone. 99999, not more: the int conversion of a
+ * larger float wraps negative. The spiral boss finishes only when its
+ * health ends between 0 and 1 (sub_0010CF60), so it gets health - 1. */
+static uint32_t actor_rec(uint32_t actor, uint32_t id)
+{
+    uint32_t e = OOGIE_MEM32(actor + 0x40), n = 0;
+    while (e >= 0x10000 && n++ < 64) {
+        if (OOGIE_MEM32(e) == id) return e;
+        e = OOGIE_MEM32(e + 8);
+    }
+    return 0;
+}
+void sub_000F3BF0_enter(void)
+{
+    static const uint32_t jack_sites[] = {
+        0x001064F7u,                             /* Ch1 shadow, sub_001063C0 */
+        0x000EEE58u, 0x000EEEE1u,                /* Casino Oogie, sub_000EEE10 */
+        0x000F1F72u,                             /* Casino Oogie: the dice going off in his belly, sub_000F1EF0 (flags 9) */
+        0x000F69B8u,                             /* Lock, Shock, Barrel (shared health), sub_000F69A0 */
+        0x000FD4D8u, 0x000FD53Eu,                /* the bathtub, sub_000FD420 */
+        0x00101573u, 0x00101597u, 0x001015DFu, 0x00101639u, 0x0010170Eu, 0x00101785u, 0x001017E7u,
+        0x00101A2Fu,                             /* Mega Oogie's parts, sub_00101490 / sub_00101A1C (fixed 1.0) */
+        0x0010A67Au,                             /* a small spider (Mega Spider's), sub_0010A420 */
+        0x00109013u,                             /* a small spider's damage passed to the Mega Spider: see below */
+        0x0010F8CDu,                             /* the Mega Spider's body, sub_0010F730 (0 before its last form) */
+    };
+    static int logn = -1;
+    uint32_t ret = OOGIE_MEM32(g_esp), t = OOGIE_MEM32(g_esp + 4), k;
+    float d, d0;
+    int site = 0;
+    if (logn < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); logn = (e && *e == '1') ? 80 : 0; }
+    if (!g_pc.cheat_oneshot && !logn) return;
+    for (k = 0; k < sizeof jack_sites / sizeof jack_sites[0]; k++) if (ret == jack_sites[k]) site = 1;
+    memcpy(&d, (const void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), 4);
+    d0 = d;
+    if (g_pc.cheat_oneshot && site && t >= 0x10000 && d > 0 && d < 99999.0f
+        && (OOGIE_MEM32(g_esp + 12) & 5)) {
+        if (ret == 0x00109013u) {
+            /* The Mega Spider ("spiral", types 1/0xE/0xF; owner 2026-11-04:
+             * it never came back for the last hit). Underground (state 4,
+             * sub_0010D9E0) it reforms only once no small spider is left and
+             * its health is above 0: at most 1 it comes back in its last,
+             * smallest form (rec5 + 0xD0 = 1), at 0 or below the state waits
+             * for ever (0x10DD20). A small spider passes the damage it takes
+             * (up to its own health) to it here; with the cheat that takes
+             * the Mega Spider to exactly 1, never lower. */
+            uint32_t r5 = actor_rec(t, 5), ty = OOGIE_MEM32(t + 8);
+            float h = 0, pend = 0;
+            if (r5 && (ty == 1 || ty == 0xE || ty == 0xF)) {
+                memcpy(&h, (const void *)((uintptr_t)(r5 + 0x54) + g_xbox_mem_offset), 4);
+                memcpy(&pend, (const void *)((uintptr_t)(r5 + 0x5C) + g_xbox_mem_offset), 4);
+                d = h - 1.0f - pend;
+                if (!(d > 0)) d = 0;
+            }
+        } else
+            d = 99999.0f;
+        memcpy((void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), &d, 4);
+    }
+    if (logn > 0) {   /* test: OOGIE_CHEAT_LOG=1 */
+        logn--;
+        fprintf(stderr, "[CHEAT] boss damage from %08X: actor %08X type %u, flags %u, %.1f -> %.1f\n",
+                ret, t, t >= 0x10000 ? OOGIE_MEM32(t + 8) : 0, OOGIE_MEM32(g_esp + 12), d0, d);
+        fflush(stderr);
+    }
+}
+
+/* The Mega Spider underground (state 4, sub_0010D9E0(actor, rec5)): on
+ * entry (sub_0010D870) its spawn budget [rec5 + 0x188] is int(health - 1)
+ * and small spiders of up to 20 health each are made from it, one every
+ * 0.075 s (0x10DC60-0x10DCD4). With the cheat the budget is 1 before the
+ * first one: one small spider of 1 health comes out, and its kill takes the
+ * Mega Spider to 1 (above), so the game's own exit makes it reform in its
+ * last form, where one hit ends the fight (state 10, sub_00110A00). */
+void sub_0010D9E0_enter(void)
+{
+    uint32_t a = OOGIE_MEM32(g_esp + 4), r = OOGIE_MEM32(g_esp + 8), ty;
+    if (!g_pc.cheat_oneshot || a < 0x10000 || r < 0x10000) return;
+    ty = OOGIE_MEM32(a + 8);
+    if ((ty == 1 || ty == 0xE || ty == 0xF) && r == actor_rec(a, 5)
+        && OOGIE_MEM32(r + 0x18C) == 0 && (int32_t)OOGIE_MEM32(r + 0x188) > 1) {
+        fprintf(stderr, "[CHEAT] Mega Spider underground: one small spider instead of %d health's worth\n",
+                (int32_t)OOGIE_MEM32(r + 0x188));
+        fflush(stderr);
+        OOGIE_MEM32(r + 0x188) = 1;
+    }
+}
+
+/* Test log (OOGIE_CHEAT_LOG=1): the Mega Spider's state changes,
+ * sub_000F3D10(actor, rec, new) -- expected 16 (sink), 4, 5 (reform),
+ * 10 (last form), then 0 at the defeat. */
+void sub_000F3D10_enter(void)
+{
+    static int on = -1;
+    uint32_t a = OOGIE_MEM32(g_esp + 4), r = OOGIE_MEM32(g_esp + 8), ty;
+    float h = 0;
+    if (on < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); on = e && *e == '1'; }
+    if (!on || a < 0x10000 || r < 0x10000) return;
+    ty = OOGIE_MEM32(a + 8);
+    if (ty != 1 && ty != 0xE && ty != 0xF) return;
+    memcpy(&h, (const void *)((uintptr_t)(r + 0x54) + g_xbox_mem_offset), 4);
+    fprintf(stderr, "[CHEAT] Mega Spider (type %u) state %u -> %u, health %.1f, last form %u\n",
+            ty, OOGIE_MEM32(r + 0x6C), OOGIE_MEM32(g_esp + 12), h, OOGIE_MEM32(r + 0xD0));
+    fflush(stderr);
+}
+
+/* Dr. Finkelstein (Chapter 8) has no health to take: sub_000F4B40, the
+ * brain-insertion state, deals half his maximum while the fight manager's
+ * [[0x3F610C] + 0x104] is 0 (first brain) and runs his restoration once it
+ * is 1 (second). With the cheat the first insertion counts as the second. */
+void sub_000F4B40_enter(void)
+{
+    uint32_t m = OOGIE_MEM32(0x3F610C);
+    if (g_pc.cheat_oneshot && m >= 0x10000 && OOGIE_MEM32(m + 0x104) == 0) {
+        OOGIE_MEM32(m + 0x104) = 1;
+        fprintf(stderr, "[CHEAT] Finkelstein: first brain counts as the second\n");
+        fflush(stderr);
+    }
+}
+
+void sub_001177A0_enter(void) { oneshot_hit(); }
+/* sub_0011B2F0 (the Fire and Ice Kings, Ch20) is not hooked here: it turns a
+ * hit of the wrong element into healing (damage x -1.0 / x -1.5 at
+ * 0x11B3B5 / 0x11B3C9), so a raised hit healed them to full. Its damage
+ * always ends in sub_001131E0 (0x11B6B4), which the cheat covers. */
+void sub_00120A90_enter(void) { oneshot_hit(); }
+void sub_001318F0_enter(void) { oneshot_hit(); }
+void sub_0013D990_enter(void) { oneshot_hit(); }
+void sub_00143850_enter(void) { oneshot_hit(); }
+void sub_001480E0_enter(void) { oneshot_hit(); }
+void sub_0015A550_enter(void) { oneshot_hit(); }
+void sub_001756A0_enter(void) { oneshot_hit(); }
+void sub_00176810_enter(void) { oneshot_hit(); }
+void sub_001779A0_enter(void) { oneshot_hit(); }
+void sub_001784E0_enter(void) { oneshot_hit(); }
+void sub_001792D0_enter(void) { oneshot_hit(); }
+void sub_0017A350_enter(void) { oneshot_hit(); }
+void sub_0017ABE0_enter(void) { oneshot_hit(); }
+void sub_0017D280_enter(void) { oneshot_hit(); }
+void sub_0017E6E0_enter(void) { oneshot_hit(); }
+void sub_0017F0F0_enter(void) { oneshot_hit(); }
+void sub_00180CE0_enter(void) { oneshot_hit(); }
+void sub_00182060_enter(void) { oneshot_hit(); }
+void sub_001846E0_enter(void) { oneshot_hit(); }
+void sub_00186600_enter(void) { oneshot_hit(); }
 
 void sub_000CF810_enter(void)
 {

@@ -366,6 +366,9 @@ static void sdl_scan(void)
     }
 }
 
+static volatile LONG s_last_ps;   /* the last pad pressed is a PlayStation pad */
+int pc_input_last_pad_playstation(void) { return s_last_ps != 0; }
+
 static DWORD WINAPI input_thread(LPVOID arg)
 {
     int use_sdl = (int)(INT_PTR)arg;
@@ -420,6 +423,13 @@ static DWORD WINAPI input_thread(LPVOID arg)
             memset(sd, 0, sizeof sd);
         }
 
+        /* Button prompts set to Automatic (pc_menu.c): the kind of pad that
+         * was used last, a press on it, not just being plugged in. */
+        for (p = 0; p < XUSER_MAX_COUNT; p++)
+            if (xi[p].present && xi[p].btn & ~s_xi[p].btn) InterlockedExchange(&s_last_ps, 0);
+        for (p = 0; p < MAX_SDL; p++)
+            if (sd[p].present && sd[p].btn & ~s_sdl[p].btn)
+                InterlockedExchange(&s_last_ps, s_sdl_type[p] == SDLT_PS3 || s_sdl_type[p] == SDLT_PS4 || s_sdl_type[p] == SDLT_PS5);
         EnterCriticalSection(&s_lock);
         memcpy(s_xi, xi, sizeof xi);
         memcpy(s_sdl, sd, sizeof sd);

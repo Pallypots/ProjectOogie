@@ -12,6 +12,8 @@ File names are PCSX2 texture-replacement hashes (`<hash>-<hash>-<fmt>`), keyed t
 
 ## Credits and source
 Created by RetroGenerica, with help from Solid Snack. Original release: https://gbatemp.net/threads/the-nightmare-before-christmas-oogies-revenge-ps2-hd-texture-pack-xbox-button-texture-pack-100-complete-updated-2024.623200/post-10024146
+
+**Permission (2026-11-04):** the owner reports having RetroGenerica's permission to use the packs with this port, with credit. Decision: the pack files are still not committed or shipped, because they are derived from the game's own textures (Disney/Capcom art), which the project never redistributes; the port ships only the match tables (`assets/texpacks/*.map`, keys and file names) and installs a pack from the zip the player downloads from the author. Credit goes in the README, the release notes and the Mods page.
 Redistribution permission: **unknown, must be asked before any public release.**
 
 ## Compatibility notes

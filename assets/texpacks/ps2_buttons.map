@@ -1,0 +1,24 @@
+# Project Oogie texture map, written by scripts/build_texmap.py. No pixels: keys and file names only.
+# pack ps2_buttons SLUS-20860 files 21 bytes 28190436
+# row: <WxH_key> <pack file name> <flags>
+#  key   = port texture key of the Xbox texture (d3d11_backend.c tex_content_hash), W x H of the Xbox texture
+#  flags = alpha2 (PS2 alpha 0..128: double it), style=ps (shows PlayStation glyphs), style=modern (button pack),
+#          many=N (N different PS2 textures matched this key; best kept), ok|check, score=<match score 0..1>
+# rows 17 (ok 3, check 14)
+128x32_51fc7ec5a904af9e 95f61761da6871f0-8c565d398850c180-000055d3.dds style=modern check score=0.766
+128x32_78f19aa50eb754ff 566490a1015d0f2c-7dd1bbb5621a901e-000055d4.dds style=modern ok score=0.918
+256x256_143c600de665d59a eb5036c01b5aef3d-15b941a984caa249-00006213.dds style=modern ok score=0.934
+256x256_6147b47589aeef12 ae226892fdb87448-785b8a63f35b1650-00006213.dds style=modern slots=ps2 check score=0.933
+512x128_01deea2d7c79d33c ada52e36527b1706-fbe24fc5b58b71ba-00005e54.dds alpha2 style=modern slots=ps2 check score=0.835
+512x128_0b8aeb37358add2a c0cf312631e086a2-3f932dcaef43624c-00005e54.dds alpha2 style=modern slots=ps2 check score=0.834
+512x128_1479689c9abc8880 3db5eabd584ea560-d581d71cb3aa44e9-00005e54.dds alpha2 style=modern slots=ps2 check score=0.841
+512x128_3734d994ea8c011a 99984a96eca39bbf-a4c99bdec8f29744-00005e54.dds alpha2 style=modern slots=ps2 check score=0.754
+512x128_57b3ceddd5353b75 8ff5d1512b4d48b6-6e648a686117d760-00005e54.dds alpha2 style=modern slots=ps2 check score=0.794
+512x128_6536f499a1a738aa 13a3bc86e6aea658-6f9a4a2c73741990-00005e54.dds alpha2 style=modern slots=ps2 check score=0.826
+512x128_704140b076ccdad5 e71301c252ecf1d1-7ff94fa6f5254486-00005e54.dds alpha2 style=modern slots=ps2 check score=0.825
+512x128_7ce2c76a0cbdac8d 518029c1b4469b50-628780be3d778a05-00005e54.dds alpha2 style=modern slots=ps2 check score=0.790
+512x128_8add6366147a5266 90386d8eeae02206-84bfc588ccdc30f2-00005e54.dds alpha2 style=modern slots=ps2 check score=0.821
+512x128_ac8c0d4886b00146 72fc72ce13215d21-4fad054532add993-00005e54.dds alpha2 style=modern slots=ps2 check score=0.834
+512x128_c7f05ab44e16fbdc 927bd316c313b060-376ab5b8dca6092-00005e54.dds alpha2 style=modern slots=ps2 check score=0.777
+512x128_d8f9169b7a46c3fd f9eb6c5be8da3593-ddcbb951237b21dc-00005e54.dds alpha2 style=modern slots=ps2 check score=0.819
+64x32_72d0c45c22493627 253994aa43c490c4-a130bb4ccfa9bf90-00005594.dds style=modern ok score=0.913

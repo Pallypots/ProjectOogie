@@ -45,6 +45,8 @@ typedef struct {
     int mipmaps;         /* mip chains for textures the game mip-filters (d3d11_backend.c tex_upload) */
     int hud_edges;       /* widescreen: corner HUD pieces at the screen edges */
     int tex_dump;        /* Mods > Save Game Textures: textures to texture_dump\ */
+    int ps2_hd;          /* Mods > PS2 HD Textures: the PCSX2 HD pack (assets/texpacks/ps2_hd.map) */
+    int button_style;    /* Mods > Button Prompts: 0 automatic, 1 original Xbox, 2 modern Xbox, 3 PlayStation */
     int audio_buffer;    /* 0 small (lowest delay), 1 large (no crackles); at start */
     int show_fps;        /* frame-rate counter in the corner */
     int rumble;          /* 0..2: off, normal, strong */
@@ -58,8 +60,9 @@ typedef struct {
     int cheat_health;    /* Cheats page (GitHub #6): Jack's health kept full (recomp_manual.c) */
     int cheat_souls;     /* Cheats page: the soul wallet kept at the game's cap, 99999 */
     int cheat_exclaim;   /* Cheats page: the chapter's exclamation points kept at 999 */
+    int cheat_combo;     /* Cheats page: the chapter's best combo kept at 999 */
     int cheat_freeze;    /* Cheats page: the chapter clock (Time grade) stands still */
-    int cheat_oneshot;   /* Cheats page: Jack's hits do 9999 damage */
+    int cheat_oneshot;   /* Cheats page: any damaging hit finishes the enemy */
     int cheat_speed;     /* Cheats page: Jack moves twice as far each frame */
     int discord;         /* Discord Rich Presence: chapter on the Discord profile (pc_discord.c) */
     int language;        /* the console language the game sees: 1 English, 3 German, 4 French,

@@ -1,0 +1,9 @@
+# Project Oogie PlayStation-glyph map, written by scripts/build_texmap.py. No pixels.
+# For button style 'PlayStation (disc art)': the Xbox-glyph texture with <key> is replaced by the neutral
+# (PlayStation-glyph) copy of the same entry, read at run time from the player's own game files.
+# row: <WxH_key of the _u/_b copy> <archive relative to game\> <entry> <offset> <size> <format> <WxH of the copy> <lang of key>
+#  offset/size = the whole DDS file (128-byte header + levels) inside the archive; offset from the start of the archive
+# rows 3
+128x128_4d915ee526863139 stm_data\ckpt.stm pig/ckpt00.pig 64576 16512 DXT5 128x128 _u
+128x32_51fc7ec5a904af9e stm_data\sbuty.stm common/pig/button00.pig 608256 4224 DXT5 128x32 _u
+128x32_78f19aa50eb754ff stm_data\ckpt.stm pig/ckpt08.pig 249920 4224 DXT5 128x32 _u

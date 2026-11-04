@@ -7,7 +7,7 @@
 
 #define MAX_ENTRIES 256
 
-typedef struct { char sec[32]; char key[48]; char val[160]; } Entry;
+typedef struct { char sec[32]; char key[48]; char val[320]; } Entry;   /* val: long folder paths (texture packs) */
 
 static Entry s_ent[MAX_ENTRIES];
 static int s_n;
@@ -90,6 +90,7 @@ static const char s_default_ini[] =
 "infinite_health = 0\n"
 "max_souls = 0\n"
 "max_exclamation_points = 0\n"
+"max_combo = 0\n"
 "freeze_time = 0\n"
 "one_shot_kill = 0\n"
 "super_speed = 0\n"
@@ -173,7 +174,7 @@ static void trim(char *s)
 
 static void parse(FILE *f)
 {
-    char line[256], sec[32] = "";
+    char line[512], sec[32] = "";
     while (fgets(line, sizeof line, f)) {
         char *eq, *c;
         trim(line);
@@ -343,7 +344,7 @@ int pc_settings_set(const char *section, const char *key, const char *value)
             if (t[0] == '[') {
                 if (in_sec && !done && last_in_sec >= 0) {
                     /* Section ends without the key: insert it there. */
-                    char add[256]; size_t al;
+                    char add[512]; size_t al;
                     snprintf(add, sizeof add, "%s = %s\r\n", key, value);
                     al = strlen(add);
                     if (on + al + 1 >= ocap) { ocap = (on + al) * 2; out = (char *)realloc(out, ocap); }
@@ -370,13 +371,13 @@ int pc_settings_set(const char *section, const char *key, const char *value)
         }
     }
     if (!done) {
-        char add[320];
+        char add[512];
         if (in_sec && last_in_sec >= 0 && last_in_sec == (long)on) {
             snprintf(add, sizeof add, "%s%s = %s\r\n", (on && out[on - 1] != '\n') ? "\r\n" : "", key, value);
         } else {
             snprintf(add, sizeof add, "%s\r\n[%s]\r\n%s = %s\r\n", (on && out[on - 1] != '\n') ? "\r\n" : "", section, key, value);
             if (in_sec && last_in_sec >= 0) {   /* the section is open but trailing comments followed */
-                char a2[256]; size_t al;
+                char a2[512]; size_t al;
                 snprintf(a2, sizeof a2, "%s = %s\r\n", key, value);
                 al = strlen(a2);
                 if (on + al + 1 >= ocap) { ocap = (on + al) * 2; out = (char *)realloc(out, ocap); }
@@ -446,6 +447,9 @@ void pc_config_load(void)
     g_pc.mipmaps = pc_settings_int("Graphics", "mipmaps", 1) != 0;
     g_pc.hud_edges = pc_settings_int("Display", "hud_edges", 1) != 0;
     g_pc.tex_dump = pc_settings_int("Mods", "save_textures", 0) != 0;
+    g_pc.ps2_hd = pc_settings_int("TexPacks", "ps2_hd", 1) != 0;
+    g_pc.button_style = pc_settings_int("TexPacks", "button_prompts", 0);
+    if (g_pc.button_style < 0 || g_pc.button_style > 3) g_pc.button_style = 0;
     g_pc.audio_buffer = pc_settings_int("Audio", "buffer", 1) != 0;
     g_pc.pause_bg = pc_settings_int("Audio", "pause_in_background", 0) != 0;
     g_pc.skip_intro = pc_settings_int("Display", "skip_intro", 0) != 0;
@@ -453,6 +457,7 @@ void pc_config_load(void)
     g_pc.cheat_health = pc_settings_int("Cheats", "infinite_health", 0) != 0;
     g_pc.cheat_souls = pc_settings_int("Cheats", "max_souls", 0) != 0;
     g_pc.cheat_exclaim = pc_settings_int("Cheats", "max_exclamation_points", 0) != 0;
+    g_pc.cheat_combo = pc_settings_int("Cheats", "max_combo", 0) != 0;
     g_pc.cheat_freeze = pc_settings_int("Cheats", "freeze_time", 0) != 0;
     g_pc.cheat_oneshot = pc_settings_int("Cheats", "one_shot_kill", 0) != 0;
     g_pc.cheat_speed = pc_settings_int("Cheats", "super_speed", 0) != 0;
@@ -472,6 +477,15 @@ void pc_config_load(void)
          * times in a session during films and save reads (owner 2026-10-24,
          * play.log); 8 (the most the queue takes) hold 85 ms. */
         _putenv(g_pc.audio_buffer ? "RECOMP_AUDIO_BUF_COUNT=8" : "RECOMP_AUDIO_BUF_COUNT=4");
+    if (!getenv("RECOMP_AUDIO_BUF_SAMPLES") && g_pc.audio_buffer) {
+        /* GitHub #9 (Steam Deck: singing cuts in and out): Proton stalls of
+         * 85-711 ms emptied the 85 ms queue (player logs: underruns in the
+         * dance fights). Under Wine the large buffer holds twice that
+         * (8 x 1024 samples, 170 ms); Windows keeps 85 ms. */
+        HMODULE nt = GetModuleHandleA("ntdll.dll");
+        if (nt && GetProcAddress(nt, "wine_get_version"))
+            _putenv("RECOMP_AUDIO_BUF_SAMPLES=1024");
+    }
     g_pc.show_fps = pc_settings_int("Graphics", "show_fps", 0) != 0;
     g_pc.rumble = pc_settings_int("Controller", "rumble", 1);
     if (g_pc.rumble < 0 || g_pc.rumble > 2) g_pc.rumble = 1;

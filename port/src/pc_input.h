@@ -15,6 +15,9 @@ enum {
 /* Buttons held on any connected pad (1 << PB_x), sticks folded into the
  * d-pad bits. For the settings menu, which reads pads while the game cannot. */
 uint32_t pc_input_raw_buttons(void);
+/* The last pad a button was pressed on is a DualShock / DualSense (button
+ * prompts set to Automatic). */
+int pc_input_last_pad_playstation(void);
 
 /* Name of a PB_x button as settings.ini writes it ("A", "LB", "DUp" ...). */
 const char *pc_input_button_name(int pb);

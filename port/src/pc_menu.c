@@ -105,6 +105,8 @@ typedef struct {
 } Item;
 
 static const Opt o_onoff[] = { { "Off", 0 }, { "On", 1 } };
+static const Opt o_btnstyle[] = { { "Automatic (follows your pad)", 0 }, { "Original Xbox", 1 },
+                                  { "Modern Xbox", 2 }, { "PlayStation", 3 } };
 static const Opt o_mode[] = { { "Windowed", 0 }, { "Fullscreen", 1 } };
 static const Opt o_aspect[] = { { "4:3 (Original)", 0 }, { "Widescreen (Fill Screen)", 1 }, { "Stretch to Window", 2 } };
 static const Opt o_fps[] = { { "30 (half speed: slow motion)", 30 }, { "60 (Original)", 60 } };
@@ -281,9 +283,11 @@ static Item s_items[] = {
       IT_CHOICE, &g_pc.cheat_souls, o_onoff, 2, 0, "Cheats", "max_souls" },
     { P_CHEATS, "Max Exclamation Points", "The chapter's exclamation points stay at 999, the most it counts: top marks for scares.",
       IT_CHOICE, &g_pc.cheat_exclaim, o_onoff, 2, 0, "Cheats", "max_exclamation_points" },
+    { P_CHEATS, "Max Combo", "The chapter's best combo stays at 999, the most it counts: top marks for combos.",
+      IT_CHOICE, &g_pc.cheat_combo, o_onoff, 2, 0, "Cheats", "max_combo" },
     { P_CHEATS, "Freeze Time", "The chapter clock stops while this is on: the Time grade counts only the time it was off.",
       IT_CHOICE, &g_pc.cheat_freeze, o_onoff, 2, 0, "Cheats", "freeze_time" },
-    { P_CHEATS, "One-Shot Kill", "Jack's attacks hit for 9999: enemies go down in one hit. Bosses too: turn it off if a boss fight stalls.",
+    { P_CHEATS, "One-Shot Kill", "Any hit that does damage finishes the enemy, every kind. Bosses too: turn it off if a boss fight stalls.",
       IT_CHOICE, &g_pc.cheat_oneshot, o_onoff, 2, 0, "Cheats", "one_shot_kill" },
     { P_CHEATS, "Super Speed", "Jack runs twice as fast.",
       IT_CHOICE, &g_pc.cheat_speed, o_onoff, 2, 0, "Cheats", "super_speed" },
@@ -292,6 +296,10 @@ static Item s_items[] = {
       IT_ACTION, NULL, NULL, 0, 0, NULL, NULL, NULL, 0, act_open_mods },
     { P_MODS, "Save Game Textures", "For texture packs: every texture the game shows is saved to texture_dump\\ as a PNG.",
       IT_CHOICE, &g_pc.tex_dump, o_onoff, 2, 0, "TexDump", "save_textures" },
+    { P_MODS, "PS2 HD Textures", "RetroGenerica's HD texture pack for the PS2 version, if you put it in mods\\ (see README). Off: the original textures.",
+      IT_CHOICE, &g_pc.ps2_hd, o_onoff, 2, 1, "TexPacks", "ps2_hd" },
+    { P_MODS, "Button Prompts", "The buttons the game shows. Modern Xbox needs the Modern Xbox Buttons pack in mods\\; PlayStation uses the game's own PS2 art.",
+      IT_CHOICE, &g_pc.button_style, o_btnstyle, 4, 0, "TexPacks", "button_prompts" },
 #define MODSLOT(k) { -1, s_mod_name[k], "Turn this mod on or off. Files the game loads from now on use the change.", \
                      IT_CHOICE, &s_mod_on[k], o_onoff, 2, 1, "Mods", s_mod_name[k] }
     MODSLOT(0), MODSLOT(1), MODSLOT(2), MODSLOT(3), MODSLOT(4), MODSLOT(5), MODSLOT(6), MODSLOT(7),
@@ -441,6 +449,15 @@ static void save_choice(const Item *it)
     if (it->sec && !strcmp(it->sec, "TexDump")) {   /* Save Game Textures, kept under [Mods] */
         pc_settings_set("Mods", "save_textures", *it->field ? "1" : "0");
         note(*it->field ? "Textures are saved to texture_dump\\ as the game shows them." : "Texture saving off.");
+        return;
+    }
+    if (it->sec && !strcmp(it->sec, "TexPacks")) {
+        char v[16];
+        snprintf(v, sizeof v, "%d", *it->field);
+        pc_settings_set("TexPacks", it->key, v);
+        oogie_textures_rescan();        /* the PS2 packs and button prompts: textures are matched again */
+        note(it->field == &g_pc.ps2_hd ? (*it->field ? "PS2 HD textures on (if the pack is in mods\\)." : "PS2 HD textures off: the original textures.")
+                                       : "Button prompts changed: they show the next time the game draws them.");
         return;
     }
     if (it->sec && !strcmp(it->sec, "Mods")) {

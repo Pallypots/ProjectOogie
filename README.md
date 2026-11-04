@@ -69,6 +69,7 @@ The translation is done with [XboxRecomp](https://github.com/sp00nznet/xboxrecom
 - **Replacement files**: `mods\<Mod Name>\files\<path on the disc>` (for example, a replacement film).
 - **Texture packs**: switch on *Save Game Textures*, and every texture the game shows is saved to `texture_dump\` as `<width>x<height>_<hash>.png`. Edit or upscale it and put it, under the same name, in `mods\<Mod Name>\textures\`. Any size works.
 - Mods are switched on and off on the menu's **Mods** page.
+- **PS2 HD textures and button prompts** (from version 0.2.7): RetroGenerica's fan-made HD Texture Pack and Modern Xbox Buttons pack for the PS2 version (made with Solid Snack) work in this port. Download them from [their GBAtemp page](https://gbatemp.net/threads/the-nightmare-before-christmas-oogies-revenge-ps2-hd-texture-pack-xbox-button-texture-pack-100-complete-updated-2024.623200/); start the game with the downloaded file in your Downloads folder, the game folder or `mods\`, and it offers to install it. F1 > Mods switches the HD textures on and off and picks the button prompts: Original Xbox, Modern Xbox, PlayStation, or Automatic (follows your pad).
 
 <p align="center">
   <img src="docs/images/shot_menu.jpg" width="49%">
@@ -121,4 +122,5 @@ How the port works, and everything learned while making it, is written up in [do
 - *The Nightmare Before Christmas: Oogie's Revenge* is © 2005 Touchstone Pictures / Disney, developed by Capcom and TOSE. This is an unofficial fan project, not affiliated with or endorsed by them. The screenshots in this README are of the game running in this port.
 - The program contains the game's code, translated to native code. The game's art, sound, films and levels are not included: they come from your own disc. Please own the game.
 - The port's own code is MIT licensed (see [LICENSE](LICENSE)). Third-party parts and their licenses are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): XboxRecomp (MIT), SDL2 (zlib), the Mountains of Christmas font (Apache 2.0).
+- The PS2 HD Texture Pack and Modern Xbox Buttons pack are by RetroGenerica, with Solid Snack, used with permission. They are not included in this repository or the download; get them from [their page](https://gbatemp.net/threads/the-nightmare-before-christmas-oogies-revenge-ps2-hd-texture-pack-xbox-button-texture-pack-100-complete-updated-2024.623200/).
 - xemu and Cxbx-Reloaded served as references for how the Xbox behaves. None of their code is included.

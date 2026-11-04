@@ -204,6 +204,8 @@ set(GAME_SOURCES
     src/pc_menu.c           # in-game settings menu (F1 / Back+Start)
     src/pc_stall.c          # [STALL] call stacks when no frame for 200 ms
     src/pc_log.c            # log lines written by their own thread (no disk waits)
+    src/pc_dds.c            # DDS texture packs: BC1-3 / BC7 with every mip (d3d11_backend.c)
+    src/pc_packinstall.c    # installs a downloaded PS2 texture pack archive into mods\ (tar.exe)
     src/pc_shot.c           # F12 screenshots (PNG through WIC)
     src/pc_d3dc.c           # HLSL compiler loaded at run time (shipped copy first: Proton)
     src/pc_sysinfo.c        # version and system details at the top of the log

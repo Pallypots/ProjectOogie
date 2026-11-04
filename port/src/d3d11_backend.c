@@ -96,8 +96,9 @@ typedef struct {
     float k0[8][4], k1[8][4];   /* per-stage constants c0, c1 */
     uint32_t fin[4];            /* final combiner words 0, 1 */
     float fk0[4], fk1[4], fogc[4];
+    float tas[4];               /* per stage: sampled alpha times this (PS2 texture packs: 2) */
 } ShaderConsts;
-static ShaderConsts s_consts;
+static ShaderConsts s_consts = { .tas = { 1.0f, 1.0f, 1.0f, 1.0f } };
 /* GPU vertex programs: first VIN element of the current draw (rt.w). */
 static float s_vin_base;
 
@@ -166,6 +167,8 @@ int xbox_FramebufferKeyDown(int vk);   /* src/input/keyboard.c */
 #include "pc_settings.h"
 #include "pc_menu.h"
 #include "pc_shot.h"
+#include "pc_dds.h"
+#include "pc_input.h"
 #include <ctype.h>
 
 /* Once per frame: a key the runtime thinks is held must be physically down,
@@ -467,7 +470,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
  * included (they must match the vertex shader's output). */
 #define HLSL_COMMON \
 "cbuffer C : register(b0) { float4 rt; float4 tx; float4 at;\n" \
-"  uint4 rcs; uint4 rcw[8]; float4 k0[8]; float4 k1[8]; uint4 fin; float4 fk0; float4 fk1; float4 fogc; };\n" \
+"  uint4 rcs; uint4 rcw[8]; float4 k0[8]; float4 k1[8]; uint4 fin; float4 fk0; float4 fk1; float4 fogc; float4 tas; };\n" \
 "struct VI { float4 p : POSITION; float4 c : COLOR0; float2 t : TEXCOORD0;\n" \
 "  float4 s : COLOR1; float2 fq : TEXCOORD1; float4 t1 : TEXCOORD2; float4 t2 : TEXCOORD3; float4 t3 : TEXCOORD4; };\n" \
 "struct VO { float4 p : SV_Position; float4 c : COLOR0; float2 t : TEXCOORD0;\n" \
@@ -499,7 +502,7 @@ HLSL_COMMON
 "    if (tx.w > 1.5) { float sw = cr; cr = cb; cb = sw; }\n"
 "    return float4(saturate(y + 1.596 * cr), saturate(y - 0.813 * cr - 0.391 * cb),\n"
 "                  saturate(y + 2.018 * cb), 1.0); }\n"
-"  if (tx.z > 0.5) c *= T.Sample(S, i.t);\n"
+"  if (tx.z > 0.5) { float4 s0 = T.Sample(S, i.t); s0.a = saturate(s0.a * tas.x); c *= s0; }\n"
 "  return atest(saturate(c)); }\n"
 "struct BO { float4 p : SV_Position; float2 t : TEXCOORD; };\n"
 "BO bvs(uint id : SV_VertexID) { BO o; float2 t = float2((id << 1) & 2, id & 2);\n"
@@ -694,8 +697,10 @@ static void rc_stage_tex(Str *s, int st, uint32_t mode)
     else if (mode == 4)
         sadd(s, "  float4 t%d = saturate(%s);\n", st, crd[st]);
     else if (mode >= 1 && mode <= 3)    /* cube approximated as 2D */
+    {
         sadd(s, "  float4 t%d = ptex(%s, %s, %s);\n", st, tex[st], smp[st], crd[st]);
-    else                                 /* bump-env, dot product: zero */
+        sadd(s, "  t%d.a = saturate(t%d.a * tas[%d]);\n", st, st, st);
+    } else                               /* bump-env, dot product: zero */
         sadd(s, "  float4 t%d = float4(0, 0, 0, 0);\n", st);
 }
 
@@ -1570,6 +1575,7 @@ typedef struct {
     uint32_t lv, dxgi;              /* mip levels and format of tex */
     ID3D11Texture2D *tex;
     ID3D11ShaderResourceView *srv;
+    float amul;                     /* a texture pack's picture with PS2 alpha (0..128): 2, else 0 */
 } TexEntry;
 
 #define MAX_TEX 1024
@@ -1965,13 +1971,18 @@ typedef struct {
     uint64_t hash;
     uint32_t w, h;
     char path[MAX_PATH];
+    uint32_t off, size;             /* a DDS inside one of the game's archives (PlayStation prompts), else 0 */
+    float amul;                     /* 2: the picture has PS2 alpha (0..128 = opaque) */
     ID3D11ShaderResourceView *srv;
     int tried;
 } TexRepl;
 static TexRepl *s_repl;
-static int s_nrepl;
+static int s_nrepl, s_repl_cap;
 static volatile LONG s_tex_rescan = 1;      /* read the packs before the first texture */
 static uint32_t s_repl_used;
+static float s_last_tex_amul = 1.0f;        /* get_texture: the alpha factor of what it returned */
+static int s_style_used = -1;               /* button prompts the index was built for (1..3) */
+static int s_modern_found, s_hd_found;      /* PS2 packs found at the last index */
 
 /* The Mods page switched a mod: read the texture packs again. */
 void oogie_textures_rescan(void) { InterlockedExchange(&s_tex_rescan, 1); }
@@ -2003,57 +2014,248 @@ static void tex_cache_flush(void)
     s_ntex = 0; s_tex_next = 0;
 }
 
+/* Adds a replacement unless one for that picture is there already (the
+ * first one added wins: mods, then button prompts, then the HD pack). */
+static TexRepl *repl_add(uint64_t hs, unsigned w, unsigned h, const char *path)
+{
+    int i;
+    for (i = 0; i < s_nrepl; i++) if (s_repl[i].hash == hs) return NULL;
+    if (s_nrepl == s_repl_cap) {
+        TexRepl *n2;
+        int cap = s_repl_cap ? s_repl_cap * 2 : 256;
+        n2 = (TexRepl *)realloc(s_repl, sizeof(TexRepl) * (size_t)cap);
+        if (!n2) return NULL;
+        s_repl = n2; s_repl_cap = cap;
+    }
+    memset(&s_repl[s_nrepl], 0, sizeof(TexRepl));
+    s_repl[s_nrepl].hash = hs; s_repl[s_nrepl].w = w; s_repl[s_nrepl].h = h;
+    snprintf(s_repl[s_nrepl].path, MAX_PATH, "%s", path);
+    return &s_repl[s_nrepl++];
+}
+
+/* ── PS2 texture packs (0.2.7, docs/HD_ASSET_ENHANCEMENTS.md) ─────────
+ * The PCSX2 packs for the PS2 version (SLUS-20860) are named by PS2 texture
+ * hashes, so they cannot be looked up directly. assets\texpacks\*.map
+ * (scripts\build_texmap.py, our own data: names and keys only) pairs each of
+ * this game's texture names with a pack file. The packs stay where the
+ * player puts them: any folder under mods\ (or PCSX2's own textures folder)
+ * holding the pack's .dds files. One with 100 files or more is taken for the
+ * HD pack, a smaller one for the Modern Xbox Buttons pack. */
+static char s_hd_dir[MAX_PATH], s_btn_dir[MAX_PATH];
+
+static int pack_name(const char *n)   /* "<16 hex>-<hex>[-<hex>].dds" */
+{
+    int i;
+    for (i = 0; i < 16; i++) if (!isxdigit((unsigned char)n[i])) return 0;
+    return n[16] == '-' && strlen(n) > 21 && !_stricmp(n + strlen(n) - 4, ".dds");
+}
+
+static void pack_scan(const char *dir, int depth)
+{
+    WIN32_FIND_DATAA fd;
+    HANDLE fh;
+    char pat[MAX_PATH];
+    int files = 0;
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    fh = FindFirstFileA(pat, &fd);
+    if (fh == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            char sub[MAX_PATH];
+            if (depth < 5 && (size_t)snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName) < sizeof sub)
+                pack_scan(sub, depth + 1);
+        } else if (pack_name(fd.cFileName))
+            files++;
+    } while (FindNextFileA(fh, &fd));
+    FindClose(fh);
+    if (files >= 100 && !s_hd_dir[0]) snprintf(s_hd_dir, sizeof s_hd_dir, "%s", dir);
+    else if (files > 0 && files < 100 && !s_btn_dir[0]) snprintf(s_btn_dir, sizeof s_btn_dir, "%s", dir);
+}
+
+static void packs_find(void)
+{
+    const char *hd = pc_settings_get("Mods", "ps2_hd_folder"), *bt = pc_settings_get("Mods", "button_pack_folder");
+    char docs[MAX_PATH];
+    DWORD n;
+    char *d[2];
+    int k;
+    s_hd_dir[0] = s_btn_dir[0] = 0;
+    if (hd && *hd) snprintf(s_hd_dir, sizeof s_hd_dir, "%s", hd);
+    if (bt && *bt) snprintf(s_btn_dir, sizeof s_btn_dir, "%s", bt);
+    d[0] = s_hd_dir; d[1] = s_btn_dir;
+    for (k = 0; k < 2; k++) {                   /* a folder from settings.ini: trimmed, and it must exist */
+        size_t L = strlen(d[k]);
+        while (L && (d[k][L - 1] == ' ' || d[k][L - 1] == '\t' || d[k][L - 1] == '\r' || d[k][L - 1] == '\n'
+                     || d[k][L - 1] == '\\' || d[k][L - 1] == '"')) d[k][--L] = 0;
+        if (d[k][0] == '"') memmove(d[k], d[k] + 1, L);
+        if (d[k][0] && GetFileAttributesA(d[k]) == INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "[TEXPACK] folder from settings.ini not found: %s\n", d[k]);
+            d[k][0] = 0;
+        }
+    }
+    pack_scan("mods", 0);
+    n = GetEnvironmentVariableA("USERPROFILE", docs, sizeof docs);
+    if (n && n < sizeof docs - 64 && (!s_hd_dir[0] || !s_btn_dir[0])) {
+        strcat(docs, "\\Documents\\PCSX2\\textures\\SLUS-20860");
+        pack_scan(docs, 0);
+    }
+}
+
+/* Reads one .map; rows "<WxH>_<16 hex> <pack file> [flags]" or, with disc
+ * set, "<WxH>_<16 hex> <archive under game\> <entry> <offset> <size> ...".
+ * want: 0 every row but style=ps ones, 1 style=ps rows only, 2 all rows. */
+static int map_load(const char *map, const char *dir, int want, int disc)
+{
+    FILE *f = fopen(map, "r");
+    char line[1024];
+    int added = 0;
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned w, h, off = 0, size = 0;
+        unsigned long long hs;
+        char name[MAX_PATH], entry[128], path[MAX_PATH];
+        TexRepl *r;
+        int ps;
+        if (line[0] == '#' || sscanf(line, "%ux%u_%16llx %259s", &w, &h, &hs, name) != 4) continue;
+        ps = strstr(line, "style=ps") != NULL;
+        if ((want == 0 && ps) || (want == 1 && !ps)) continue;
+        /* slots=ps2: a help page whose button legend is in the PS2 order
+         * (the Xbox game means A where it shows B); differs: closer to
+         * another edition's picture. Both would show the wrong thing. */
+        if (strstr(line, "slots=ps2") || strstr(line, "differs")) continue;
+        if (disc) {
+            if (sscanf(line, "%*s %*s %127s %u %u", entry, &off, &size) != 3 || !size) continue;
+            snprintf(path, sizeof path, "game\\%s", name);
+        } else if ((size_t)snprintf(path, sizeof path, "%s\\%s", dir, name) >= sizeof path)
+            continue;
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;
+        if (!(r = repl_add(hs, w, h, path))) continue;
+        r->off = off; r->size = size;
+        r->amul = strstr(line, "alpha2") ? 2.0f : 0.0f;
+        added++;
+    }
+    fclose(f);
+    return added;
+}
+
+/* Button prompts in use: 1 Original Xbox, 2 Modern Xbox, 3 PlayStation.
+ * Automatic (0) follows the last pad pressed. */
+static int button_style_now(void)
+{
+    int st = g_pc.button_style;
+    if (st == 0) st = pc_input_last_pad_playstation() ? 3 : (s_modern_found ? 2 : 1);
+    if (st == 2 && !s_modern_found) st = 1;
+    return st;
+}
+
 static void repl_index(void)
 {
     WIN32_FIND_DATAA md, fd;
     HANDLE mh, fh;
-    int i, cap = 0, mods = 0;
+    int i, mods = 0, nbtn = 0, nhd = 0, bc7;
     for (i = 0; i < s_nrepl; i++) if (s_repl[i].srv) ID3D11ShaderResourceView_Release(s_repl[i].srv);
-    free(s_repl); s_repl = NULL; s_nrepl = 0;
+    free(s_repl); s_repl = NULL; s_nrepl = s_repl_cap = 0;
+    s_style_used = 1;
     if (getenv("OOGIE_NO_MODS") && *getenv("OOGIE_NO_MODS") == '1') return;
     mh = FindFirstFileA("mods\\*", &md);
-    if (mh == INVALID_HANDLE_VALUE) return;
-    do {
-        char pat[MAX_PATH], chk[MAX_PATH];
-        int before = s_nrepl;
-        if (!(md.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || md.cFileName[0] == '.') continue;
-        snprintf(chk, sizeof chk, "mods\\%s\\disabled", md.cFileName);
-        if (GetFileAttributesA(chk) != INVALID_FILE_ATTRIBUTES) continue;
-        snprintf(pat, sizeof pat, "mods\\%s\\textures\\*", md.cFileName);
-        fh = FindFirstFileA(pat, &fd);
-        if (fh == INVALID_HANDLE_VALUE) continue;
+    if (mh != INVALID_HANDLE_VALUE) {
         do {
-            unsigned w, h;
-            unsigned long long hs;
-            char ext[16];
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            if (sscanf(fd.cFileName, "%ux%u_%16llx.%15s", &w, &h, &hs, ext) != 4) continue;
-            if (_stricmp(ext, "png") && _stricmp(ext, "dds")) continue;
-            for (i = 0; i < s_nrepl; i++) if (s_repl[i].hash == hs) break;
-            if (i < s_nrepl) continue;              /* a mod sorted earlier has it */
-            if (s_nrepl == cap) {
-                TexRepl *n2;
-                cap = cap ? cap * 2 : 256;
-                n2 = (TexRepl *)realloc(s_repl, sizeof(TexRepl) * (size_t)cap);
-                if (!n2) break;
-                s_repl = n2;
-            }
-            memset(&s_repl[s_nrepl], 0, sizeof(TexRepl));
-            s_repl[s_nrepl].hash = hs; s_repl[s_nrepl].w = w; s_repl[s_nrepl].h = h;
-            snprintf(s_repl[s_nrepl].path, MAX_PATH, "mods\\%s\\textures\\%s", md.cFileName, fd.cFileName);
-            s_nrepl++;
-        } while (FindNextFileA(fh, &fd));
-        FindClose(fh);
-        if (s_nrepl > before) mods++;
-    } while (FindNextFileA(mh, &md));
-    FindClose(mh);
+            char pat[MAX_PATH], chk[MAX_PATH];
+            int before = s_nrepl;
+            if (!(md.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || md.cFileName[0] == '.') continue;
+            snprintf(chk, sizeof chk, "mods\\%s\\disabled", md.cFileName);
+            if (GetFileAttributesA(chk) != INVALID_FILE_ATTRIBUTES) continue;
+            snprintf(pat, sizeof pat, "mods\\%s\\textures\\*", md.cFileName);
+            fh = FindFirstFileA(pat, &fd);
+            if (fh == INVALID_HANDLE_VALUE) continue;
+            do {
+                unsigned w, h;
+                unsigned long long hs;
+                char ext[16], path[MAX_PATH];
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                if (sscanf(fd.cFileName, "%ux%u_%16llx.%15s", &w, &h, &hs, ext) != 4) continue;
+                if (_stricmp(ext, "png") && _stricmp(ext, "dds")) continue;
+                snprintf(path, MAX_PATH, "mods\\%s\\textures\\%s", md.cFileName, fd.cFileName);
+                repl_add(hs, w, h, path);
+            } while (FindNextFileA(fh, &fd));
+            FindClose(fh);
+            if (s_nrepl > before) mods++;
+        } while (FindNextFileA(mh, &md));
+        FindClose(mh);
+    }
+    /* the PS2 packs: BC7, which needs feature level 11_0 */
+    packs_find();
+    bc7 = s_feature_level >= D3D_FEATURE_LEVEL_11_0;
+    s_modern_found = bc7 && s_btn_dir[0];
+    s_hd_found = bc7 && s_hd_dir[0];
+    s_style_used = button_style_now();
+    if (s_style_used == 2)
+        nbtn = map_load("assets\\texpacks\\ps2_buttons.map", s_btn_dir, 2, 0);
+    else if (s_style_used == 3) {
+        if (s_hd_found && g_pc.ps2_hd) nbtn = map_load("assets\\texpacks\\ps2_hd.map", s_hd_dir, 1, 0);
+        nbtn += map_load("assets\\texpacks\\ps_glyphs.map", NULL, 2, 1);    /* the disc's own PlayStation art */
+    }
+    if (s_hd_found && g_pc.ps2_hd) nhd = map_load("assets\\texpacks\\ps2_hd.map", s_hd_dir, 0, 0);
     if (s_nrepl > 1) qsort(s_repl, (size_t)s_nrepl, sizeof(TexRepl), repl_cmp);
-    if (s_nrepl)
-        fprintf(stderr, "[TEXPACK] %d replacement texture%s in %d mod%s\n", s_nrepl, s_nrepl == 1 ? "" : "s",
-                mods, mods == 1 ? "" : "s");
+    if (s_hd_dir[0]) fprintf(stderr, "[TEXPACK] PS2 HD pack folder: %s\n", s_hd_dir);
+    if (s_btn_dir[0]) fprintf(stderr, "[TEXPACK] Modern Xbox Buttons pack folder: %s\n", s_btn_dir);
+    if (!bc7 && (s_btn_dir[0] || s_hd_dir[0]))
+        fprintf(stderr, "[TEXPACK] PS2 texture packs need a feature level 11_0 GPU: not used\n");
+    fprintf(stderr, "[TEXPACK] %d replacement texture%s: %d from %d mod%s, %d button prompt%s (style %d), %d from the PS2 HD pack%s\n",
+            s_nrepl, s_nrepl == 1 ? "" : "s", s_nrepl - nbtn - nhd, mods, mods == 1 ? "" : "s",
+            nbtn, nbtn == 1 ? "" : "s", s_style_used, nhd,
+            s_hd_found ? (g_pc.ps2_hd ? "" : " (found, switched off)") : " (not found)");
 }
 
-static ID3D11ShaderResourceView *repl_find(uint64_t ch, uint32_t w, uint32_t h)
+/* Mods page status: what the PS2 packs index found. */
+void oogie_texpack_status(int *hd_found, int *modern_found, int *style_now)
+{
+    if (hd_found) *hd_found = s_hd_found;
+    if (modern_found) *modern_found = s_modern_found;
+    if (style_now) *style_now = s_style_used;
+}
+
+static ID3D11ShaderResourceView *repl_load(TexRepl *r, unsigned *iw, unsigned *ih)
+{
+    ID3D11ShaderResourceView *srv = NULL;
+    ID3D11Texture2D *tx = NULL;
+    D3D11_TEXTURE2D_DESC td;
+    PcDds d;
+    size_t L = strlen(r->path);
+    memset(&td, 0, sizeof td);
+    td.ArraySize = 1; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if ((r->size || (L > 4 && !_stricmp(r->path + L - 4, ".dds"))) && pc_dds_load_part(r->path, r->off, r->size, &d)) {
+        D3D11_SUBRESOURCE_DATA sd[PC_DDS_MAX_MIPS];
+        uint32_t i;
+        for (i = 0; i < d.mips; i++) { sd[i].pSysMem = d.level[i]; sd[i].SysMemPitch = d.pitch[i]; sd[i].SysMemSlicePitch = 0; }
+        td.Width = d.w; td.Height = d.h; td.MipLevels = d.mips; td.Format = (DXGI_FORMAT)d.dxgi;
+        *iw = d.w; *ih = d.h;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, sd, &tx))) {
+            ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)tx, NULL, &srv);
+            ID3D11Texture2D_Release(tx);
+        }
+        pc_dds_free(&d);
+        if (srv) return srv;
+    }
+    if (!r->size) {                         /* PNG, or a DDS WIC can read */
+        unsigned char *px = pc_image_load_bgra(r->path, iw, ih);
+        if (px) {
+            D3D11_SUBRESOURCE_DATA sd;
+            td.Width = *iw; td.Height = *ih; td.MipLevels = 1; td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            sd.pSysMem = px; sd.SysMemPitch = *iw * 4; sd.SysMemSlicePitch = 0;
+            if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, &sd, &tx))) {
+                ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)tx, NULL, &srv);
+                ID3D11Texture2D_Release(tx);
+            }
+            free(px);
+        }
+    }
+    return srv;
+}
+
+static ID3D11ShaderResourceView *repl_find(uint64_t ch, uint32_t w, uint32_t h, float *amul)
 {
     int lo = 0, hi = s_nrepl - 1;
     while (lo <= hi) {
@@ -2065,27 +2267,13 @@ static ID3D11ShaderResourceView *repl_find(uint64_t ch, uint32_t w, uint32_t h)
             if (r->w != w || r->h != h) return NULL;
             if (!r->srv && !r->tried) {
                 unsigned iw = 0, ih = 0;
-                unsigned char *px = pc_image_load_bgra(r->path, &iw, &ih);
                 r->tried = 1;
-                if (px) {
-                    D3D11_TEXTURE2D_DESC td;
-                    D3D11_SUBRESOURCE_DATA sd;
-                    ID3D11Texture2D *tx = NULL;
-                    memset(&td, 0, sizeof td);
-                    td.Width = iw; td.Height = ih; td.MipLevels = td.ArraySize = 1;
-                    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
-                    td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                    sd.pSysMem = px; sd.SysMemPitch = iw * 4; sd.SysMemSlicePitch = 0;
-                    if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, &sd, &tx))) {
-                        ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)tx, NULL, &r->srv);
-                        ID3D11Texture2D_Release(tx);
-                    }
-                    free(px);
-                }
+                r->srv = repl_load(r, &iw, &ih);
                 if (s_repl_used++ < 20 || !r->srv)
                     fprintf(stderr, "[TEXPACK] %s %s (%ux%u for %ux%u)\n", r->srv ? "using" : "could not read",
                             r->path, iw, ih, w, h);
             }
+            *amul = r->amul;
             return r->srv;
         }
     }
@@ -2373,6 +2561,10 @@ static void tex_stats_tick(void)
 static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
 {
     uint32_t key = PHYS(t->offset);
+    s_last_tex_amul = 1.0f;
+    /* Button prompts on Automatic: the pad in use changed kind. */
+    if (s_style_used >= 0 && button_style_now() != s_style_used)
+        InterlockedExchange(&s_tex_rescan, 1);
     if (InterlockedExchange(&s_tex_rescan, 0)) {
         repl_index();
         tex_cache_flush();                  /* textures are matched again as they are drawn */
@@ -2413,6 +2605,7 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
         }
     if (e && e->checked_frame == s_frame) {
         s_last_tex_hash = e->hash;
+        if (e->amul > 0) s_last_tex_amul = e->amul;
         return e->srv;
     }
     n = tex_bytes(t);
@@ -2420,6 +2613,7 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
     s_last_tex_hash = h;
     if (e && e->hash == h && (!e->tex || e->lv == tex_mips_wanted(t))) {
         e->checked_frame = s_frame;
+        if (e->amul > 0) s_last_tex_amul = e->amul;
         return e->srv;
     }
     if (!e) {
@@ -2462,8 +2656,9 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
     {
         uint64_t ch = tex_content_hash(s_decode, t->width, t->height);
         ID3D11ShaderResourceView *rs;
+        float am = 0;
         if (g_pc.tex_dump) tex_dump(ch, s_decode, t->width, t->height);
-        rs = s_nrepl ? repl_find(ch, t->width, t->height) : NULL;
+        rs = s_nrepl ? repl_find(ch, t->width, t->height, &am) : NULL;
         if (rs) {                           /* a texture pack has this one */
             if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
             if (e->tex) ID3D11Texture2D_Release(e->tex);
@@ -2471,10 +2666,13 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
             ID3D11ShaderResourceView_AddRef(rs);
             e->srv = rs;
             e->hash = h;
+            e->amul = am;
+            if (am > 0) s_last_tex_amul = am;
             e->checked_frame = s_frame;
             return e->srv;
         }
     }
+    e->amul = 0;
     if (!e->tex && e->srv) {                /* was a replacement; the game's picture changed */
         ID3D11ShaderResourceView_Release(e->srv);
         e->srv = NULL;
@@ -2720,6 +2918,9 @@ static void set_cb(float a0, float a1, float a2, float a3, float b0, float b1, f
         return;
     memcpy(m.pData, &s_consts, sizeof s_consts);
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_cb, 0);
+    /* the texture packs' alpha factors belong to one draw (copies and the
+     * post passes after it read 1) */
+    s_consts.tas[0] = s_consts.tas[1] = s_consts.tas[2] = s_consts.tas[3] = 1.0f;
 }
 
 /* Dynamic buffers used as rings: each draw's data goes after the previous
@@ -3094,8 +3295,10 @@ static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
     if (!r) return NULL;
     if (rs->zeta_va)
         d = get_dt(rs->zeta_va, r->w, r->h);
+    s_consts.tas[0] = s_consts.tas[1] = s_consts.tas[2] = s_consts.tas[3] = 1.0f;
     if (tex0) {
         srv[0] = get_texture(tex0);
+        s_consts.tas[0] = s_last_tex_amul;
         tw = tex0->width ? 1.0f / (float)tex0->width : 1.0f;
         th = tex0->height ? 1.0f / (float)tex0->height : 1.0f;
         samp = sampler_for(tex0);
@@ -3127,6 +3330,7 @@ static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
             Nv2aTexture t;
             if (oogie_backend_stage_texture(st, &t)) {
                 srv[st] = get_texture(&t);
+                s_consts.tas[st] = s_last_tex_amul;
                 smp[st] = s_samp[sampler_for(&t)];
             }
         }

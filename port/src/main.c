@@ -388,6 +388,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * test script: set up what play.bat does (pc_setup.c). */
     pc_setup_standalone();
     {
+        /* A downloaded PS2 texture pack archive: offered once (pc_packinstall.c). */
+        extern void pc_packinstall_check(void);
+        pc_packinstall_check();
+    }
+    {
         /* Tests (0.2 weak-PC work): OOGIE_TEST_AFFINITY=<mask> runs the whole
          * program on those logical processors only (0x30: two of this
          * laptop's low-power cores), to stand in for a two-core PC. */

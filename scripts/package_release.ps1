@@ -22,6 +22,9 @@ $d3dc = Get-Item (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\Redist\D3D
 if (-not $d3dc) { throw "d3dcompiler_47.dll not found in the Windows SDK (Windows Kits\10\Redist\D3D\x64)" }
 Copy-Item $d3dc.FullName $out
 Copy-Item (Join-Path $Root "assets\fonts\*") (Join-Path $out "assets\fonts")
+# PS2 texture pack match tables: keys and file names only, the packs stay the player's own
+New-Item -ItemType Directory -Force (Join-Path $out "assets\texpacks") | Out-Null
+Copy-Item (Join-Path $Root "assets\texpacks\*.map") (Join-Path $out "assets\texpacks")
 Copy-Item (Join-Path $Root "LICENSE") (Join-Path $out "LICENSE.txt")
 Copy-Item (Join-Path $Root "THIRD-PARTY-NOTICES.md") $out
 @"
@@ -54,6 +57,20 @@ FILES
   settings.ini   your settings
   mods\          mods and texture packs (F1 > Mods explains)
   logs\play.log  the last session's log; please attach it when reporting a problem
+
+PS2 HD TEXTURES AND BUTTON PROMPTS (optional)
+  The fan-made PCSX2 texture packs for the PS2 version by RetroGenerica (with
+  Solid Snack) work here too: the "HD Texture Pack" and the "Modern Xbox Buttons"
+  pack. They are not included; get them from their author's page:
+  https://gbatemp.net/threads/the-nightmare-before-christmas-oogies-revenge-ps2-hd-texture-pack-xbox-button-texture-pack-100-complete-updated-2024.623200/
+  Put each pack's folder anywhere inside mods\ (for example mods\PS2 HD\SLUS-20860\textures\);
+  the game finds them by themselves. PCSX2's own textures\SLUS-20860 folder in
+  Documents is found too.
+  F1 > Mods > PS2 HD Textures: on / off.
+  F1 > Mods > Button Prompts: Automatic (follows the pad you use), Original
+  Xbox, Modern Xbox (needs that pack) or PlayStation (the game's own PS2 art,
+  no pack needed for the main prompts).
+  Needs a DirectX 11 graphics card (feature level 11_0).
 "@ | Set-Content (Join-Path $out "README.txt") -Encoding ascii
 $zip = Join-Path $Root ("dist\ProjectOogie-" + $(if ($Version) { $Version } else { Get-Date -Format "yyyyMMdd" }) + ".zip")
 if (Test-Path $zip) { Remove-Item $zip -Force }
