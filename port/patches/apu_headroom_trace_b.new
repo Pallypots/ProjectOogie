@@ -1,0 +1,4 @@
+            d->vp.submix_headroom[slot] =
+                (uint8_t)(argument & NV1BA0_PIO_SET_SUBMIX_HEADROOM_AMOUNT);
+            if (getenv("RECOMP_APU_BINS"))   /* Oogie (#9): see apu_headroom_trace */
+                fprintf(stderr, "[APU-HEADROOM] submix %d = %u\n", slot, d->vp.submix_headroom[slot]);

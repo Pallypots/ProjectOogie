@@ -77,6 +77,10 @@ static const char s_default_ini[] =
 "[Audio]\n"
 "; Master volume, 0 to 100.\n"
 "volume = 100\n"
+"; Music (and the songs), voices and sound effects, 0 to 200 percent each.\n"
+"music = 100\n"
+"voices = 100\n"
+"effects = 100\n"
 "; Silence the game while its window is in the background.\n"
 "mute_in_background = 0\n"
 "\n"
@@ -496,6 +500,12 @@ void pc_config_load(void)
     g_pc.other_pads = pc_settings_int("Controller", "other_pads", 1) != 0;
     g_pc.volume = pc_settings_int("Audio", "volume", 100);
     if (g_pc.volume < 0 || g_pc.volume > 100) g_pc.volume = 100;
+    g_pc.music_volume = pc_settings_int("Audio", "music", 100);
+    if (g_pc.music_volume < 0 || g_pc.music_volume > 200) g_pc.music_volume = 100;
+    g_pc.voice_volume = pc_settings_int("Audio", "voices", 100);
+    if (g_pc.voice_volume < 0 || g_pc.voice_volume > 200) g_pc.voice_volume = 100;
+    g_pc.sfx_volume = pc_settings_int("Audio", "effects", 100);
+    if (g_pc.sfx_volume < 0 || g_pc.sfx_volume > 200) g_pc.sfx_volume = 100;
     g_pc.mute_bg = pc_settings_int("Audio", "mute_in_background", 0) != 0;
 }
 

@@ -70,6 +70,20 @@ float oogie_audio_gain(void)
     return g;
 }
 
+/* Per-kind volume (GitHub #9), asked by the sound chip's mixer for every
+ * voice and mixbin (patch apu_voice_gain). The game's sound effects are
+ * buffer voices; speech is streamed in mono (spoken lines, and the centre
+ * channel of the 5.1 cutscene tracks, which the game plays as four voices:
+ * front pair, centre, bass, rear pair); music and the songs are the stereo
+ * streams and the 5.1 bass channel (mixbin 3). */
+float oogie_apu_voice_gain(int stream, int stereo, int bin)
+{
+    int pct = !stream ? g_pc.sfx_volume
+            : (!stereo && bin != 3) ? g_pc.voice_volume : g_pc.music_volume;
+    float g = (float)pct / 100.0f;
+    return g * g;                                /* the same curve as the master volume */
+}
+
 /* ---- the menu's content --------------------------------------------------- */
 enum { P_DISPLAY, P_GRAPHICS, P_AUDIO, P_CONTROLS, P_KEYBOARD, P_PAD, P_CHEATS, P_MODS, P_ABOUT, P_COUNT };
 static const char *const s_page_names[P_COUNT] = {
@@ -153,6 +167,7 @@ static const Opt o_rumble[] = { { "Off", 0 }, { "Normal", 1 }, { "Strong", 2 } }
 static const Opt o_lang[] = { { "English", 1 }, { "French (Francais)", 4 }, { "German (Deutsch)", 3 },
     { "Spanish (Espanol)", 5 }, { "Italian (Italiano)", 6 } };
 static Opt o_volume[21];
+static Opt o_mix[21];       /* 0..200 % in steps of 10 */
 static Opt o_fov[15];
 static Opt o_monitor[9];  static char s_mon_names[9][64];  static int s_nmon;
 static Opt o_winsize[10]; static char s_win_names[10][48]; static int s_nwin;
@@ -212,6 +227,12 @@ static Item s_items[] = {
 
     { P_AUDIO, "Master Volume", "Volume of everything: music, voices and sound effects.",
       IT_CHOICE, &g_pc.volume, o_volume, 21, 100, "Audio", "volume" },
+    { P_AUDIO, "Music", "Music and the songs (Jack's singing is part of the song tracks).",
+      IT_CHOICE, &g_pc.music_volume, o_mix, 21, 100, "Audio", "music" },
+    { P_AUDIO, "Voices", "Speech: cutscene dialogue and spoken lines. Raise it if voices are hard to hear.",
+      IT_CHOICE, &g_pc.voice_volume, o_mix, 21, 100, "Audio", "voices" },
+    { P_AUDIO, "Sound Effects", "Hits, footsteps, enemies and the rest of the sound effects.",
+      IT_CHOICE, &g_pc.sfx_volume, o_mix, 21, 100, "Audio", "effects" },
     { P_AUDIO, "Mute in Background", "Silence the game while another window is in front.",
       IT_CHOICE, &g_pc.mute_bg, o_onoff, 2, 0, "Audio", "mute_in_background" },
     { P_AUDIO, "Pause in Background", "Switching to another window pauses the game (this menu opens).",
@@ -356,6 +377,11 @@ static void build_options(void)
         static char names[21][8];
         snprintf(names[i], sizeof names[i], "%d", i * 5);
         o_volume[i].name = names[i]; o_volume[i].value = i * 5;
+    }
+    for (i = 0; i <= 20; i++) {
+        static char mnames[21][8];
+        snprintf(mnames[i], sizeof mnames[i], "%d%%", i * 10);
+        o_mix[i].name = mnames[i]; o_mix[i].value = i * 10;
     }
     for (i = 0; i < 15; i++) {
         static char fn[15][24];

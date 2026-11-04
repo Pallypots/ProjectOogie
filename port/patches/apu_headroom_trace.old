@@ -1,0 +1,3 @@
+    case NV1BA0_PIO_SET_HRTF_HEADROOM:
+        d->vp.hrtf_headroom = (uint8_t)(argument & NV1BA0_PIO_SET_HRTF_HEADROOM_AMOUNT);
+        break;

@@ -57,6 +57,7 @@ pages on LB/RB, Y resets a row, settings file) this one follows. Reviewed 2026-1
 | Graphics | Sharpening | Off / Low / Medium / High (default Low) | Done 2026-10-22: contrast-adaptive (after AMD CAS's idea, own code), after the AA pass |
 | Graphics | Show Frame Rate | Off / On | Done, Verified (mn1) |
 | Audio | Master Volume | 0 to 100 | Done (patch `audio_volume`) |
+| Audio | Music / Voices / Sound Effects | 0 to 200 % each | Done (patch `apu_voice_gain`, GitHub #9) |
 | Audio | Mute in Background | Off / On | Done |
 | Controls | Rumble | Off / Normal / Strong | Done (not tested on a pad) |
 | Controls | PlayStation and Other Pads | On / Off (restart) | Done |

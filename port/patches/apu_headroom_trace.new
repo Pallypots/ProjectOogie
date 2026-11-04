@@ -1,0 +1,12 @@
+    case NV1BA0_PIO_SET_HRTF_HEADROOM:
+        d->vp.hrtf_headroom = (uint8_t)(argument & NV1BA0_PIO_SET_HRTF_HEADROOM_AMOUNT);
+        /* Oogie (#9 voice balance): RECOMP_APU_BINS=1 logs the headroom
+         * (6 dB steps) the title gives HRTF voices and each submix. */
+        if (getenv("RECOMP_APU_BINS")) {
+            fprintf(stderr, "[APU-HEADROOM] hrtf=%u submix=", d->vp.hrtf_headroom);
+            for (int hb = 0; hb < NUM_MIXBINS; hb++)
+                fprintf(stderr, "%u%s", d->vp.submix_headroom[hb], hb + 1 < NUM_MIXBINS ? "," : "\n");
+            fprintf(stderr, "[APU-HEADROOM] hrtf_submix=%u,%u,%u,%u\n", d->vp.hrtf_submix[0],
+                    d->vp.hrtf_submix[1], d->vp.hrtf_submix[2], d->vp.hrtf_submix[3]);
+        }
+        break;

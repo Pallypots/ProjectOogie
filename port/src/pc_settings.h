@@ -54,6 +54,9 @@ typedef struct {
     int colour_filter;   /* accessibility: 0 off, 1 protanopia, 2 deuteranopia, 3 tritanopia (d3d11_backend.c post_process) */
     int other_pads;      /* SDL2 pads (restart) */
     int volume;          /* 0..100 master volume */
+    int music_volume;    /* 0..200 %, music, songs and the 5.1 bass channel (GitHub #9) */
+    int voice_volume;    /* 0..200 %, speech: mono streams, the 5.1 centre channel */
+    int sfx_volume;      /* 0..200 %, sound effects (the game's buffer voices) */
     int mute_bg;         /* mute while the window is in the background */
     int pause_bg;        /* switching away opens the settings menu (pauses) */
     int skip_intro;      /* press Start through the company logos film */

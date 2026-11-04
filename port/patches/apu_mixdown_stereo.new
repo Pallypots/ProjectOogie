@@ -6,16 +6,44 @@
                  * keep their side (0,4,6,8 left; 1,5,7,9 right); centre and
                  * LFE go to both at -3 dB; the effect sends, which the
                  * absent GP DSP would have turned into its own output, go to
-                 * both at -6 dB. RECOMP_APU_MIXDOWN_EVENODD=1: the old split. */
-                static int evenodd = -1;
+                 * both at -6 dB. RECOMP_APU_MIXDOWN_EVENODD=1: the old split.
+                 *
+                 * GitHub #9 (voices quiet next to the rest, vo1/vo4): the
+                 * cutscene tracks are 5.1, played as four voices at one volume
+                 * (front pair to 0/1, centre to 2, bass to 3, rear pair to
+                 * 4/5), with the dialogue in the centre. The usual stereo
+                 * downmix takes the rears at -3 dB like the centre, and the
+                 * bass channel low; here they came in at 0 dB and -3 dB, over
+                 * the dialogue. The ordinary effects go at one volume to mixbin
+                 * 31, which a multipass voice plays out to 6/7 (their sound),
+                 * and to 10, the I3DL2 reverb's input: counting that send as a
+                 * second dry copy at -6 dB put every effect 3.5 dB over its own
+                 * level (the real reverb is quiet and diffuse). Now: rears
+                 * -3 dB, bass -6 dB, the reverb send -18 dB (effects 2.5 dB
+                 * down), the other sends -6 dB as before.
+                 * RECOMP_APU_MIXDOWN_V1=1: 0.2.7's weights. */
+                static int evenodd = -1, v1 = -1;
                 if (evenodd < 0) {
                     const char *e = getenv("RECOMP_APU_MIXDOWN_EVENODD");
                     evenodd = e && *e && *e != '0';
+                    e = getenv("RECOMP_APU_MIXDOWN_V1");
+                    v1 = e && *e && *e != '0';
                 }
                 if (evenodd) {
                     for (int b = 0; b < NUM_MIXBINS; ++b) {
                         if (b & 1) right += mixbins[b][i];
                         else       left  += mixbins[b][i];
+                    }
+                } else if (!v1) {
+                    left  = mixbins[0][i] + mixbins[6][i] + mixbins[8][i]
+                          + 0.7071f * (mixbins[2][i] + mixbins[4][i])
+                          + 0.5f * mixbins[3][i] + 0.125f * mixbins[10][i];
+                    right = mixbins[1][i] + mixbins[7][i] + mixbins[9][i]
+                          + 0.7071f * (mixbins[2][i] + mixbins[5][i])
+                          + 0.5f * mixbins[3][i] + 0.125f * mixbins[10][i];
+                    for (int b = 11; b < NUM_MIXBINS; ++b) {
+                        left  += 0.5f * mixbins[b][i];
+                        right += 0.5f * mixbins[b][i];
                     }
                 } else {
                     float c = 0.0f, fx = 0.0f;

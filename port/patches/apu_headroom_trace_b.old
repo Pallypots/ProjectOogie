@@ -1,0 +1,2 @@
+            d->vp.submix_headroom[slot] =
+                (uint8_t)(argument & NV1BA0_PIO_SET_SUBMIX_HEADROOM_AMOUNT);

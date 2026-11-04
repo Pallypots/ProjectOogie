@@ -1,0 +1,12 @@
+        g *= attenuate(vol[b]) / hr;
+        {
+            /* Oogie (GitHub #9): Music / Voices / Sound Effects volumes
+             * (port/src/pc_menu.c), by kind of voice and target mixbin. A
+             * multipass voice replays mixbin 31, which the effects were sent
+             * to and already scaled on the way in, so it is left alone. */
+            extern float oogie_apu_voice_gain(int stream, int stereo, int bin);
+            uint32_t vfmt = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF);
+            if (!(vfmt & NV_PAVS_VOICE_CFG_FMT_MULTIPASS))
+                g *= oogie_apu_voice_gain((vfmt & NV_PAVS_VOICE_CFG_FMT_DATA_TYPE) != 0,
+                                          stereo, bin[b]);
+        }

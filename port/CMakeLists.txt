@@ -149,7 +149,7 @@ oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_dsp.c
                    apu_mixdown_stereo    # centre/effect sends to both sides
                    apu_doorbell_latch)   # #43: never follow a changed scratch table
 oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_vp.c
-                   apu_route_trace
+                   apu_route_trace apu_headroom_trace apu_headroom_trace_b apu_voice_gain
                    apu_fecv_trace_c apu_fecv_trace_a apu_fecv_trace_b)
 # Master volume and mute from the settings menu (pc_menu.c).
 oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_xaudio2.c
