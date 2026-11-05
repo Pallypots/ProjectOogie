@@ -1,0 +1,4 @@
+    case NV_PRIM_TRIANGLE_STRIP:
+        for (i = 0; i + 2 < n; i++)
+            raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
+        break;

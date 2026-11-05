@@ -1,0 +1,8 @@
+    case NV_PRIM_TRIANGLE_STRIP:
+        /* KNOWN_ISSUES #97: every second strip triangle reversed, so all
+         * of a strip faces one way and the back end can cull (#97). */
+        for (i = 0; i + 2 < n; i++) {
+            if (i & 1) raster_xf_clipped(&s_xf[i+1], &s_xf[i], &s_xf[i+2]);
+            else raster_xf_clipped(&s_xf[i], &s_xf[i+1], &s_xf[i+2]);
+        }
+        break;

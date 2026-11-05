@@ -1,0 +1,2 @@
+int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out)
+{

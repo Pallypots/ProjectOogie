@@ -1,3 +1,36 @@
+# Project Oogie 0.2.8
+
+Everything from the three 0.2.8 tests (below), plus fixes for GitHub #10 and
+the owner's reports.
+
+## Graphics
+- **The Fire King is whole again** (GitHub #10). In the Fire and Ice King
+  fight only his fire pieces showed. The game paints animated lava onto his
+  body texture while it plays; the port started that painting from an empty
+  picture instead of the body, so the body disappeared. Fixed in the fight
+  and in the cutscene before it.
+- **Cutscene cameras no longer "stuck in the floor"** (GitHub #10). When a
+  cutscene camera sat low, the ground right in front of the lens, which the
+  Xbox never draws, covered the screen in flat grey (Fire and Ice King
+  cutscene). The port now clips what is too close to the camera, as the
+  Xbox does.
+- **Casino Clash, Oogie's roulette table**: at "What are we gambling for,
+  you ask?" the screen was a green sheet and Oogie could not be seen. A
+  playing card behind the camera was being drawn in front of it. Fixed.
+- **Face culling**: the game's own setting for which side of a surface to
+  draw is now followed (it was ignored). The game uses it for its shadow
+  effects.
+
+## PS2 HD textures
+- **Shadow Oogie is solid black again with the HD pack.** The pack's
+  Shadow Oogie pictures store their see-through parts differently from the
+  Xbox ones, which left him partly see-through. He now keeps the Xbox
+  pictures. A check of all 847 pack pairings found four more to correct
+  (a small Jack texture, Hinterlands moss, a screen noise filter and a fire
+  glow). F1 > Mods now shows 827 HD textures (831 before).
+- A picture that is fully solid on the disc now always stays solid with a
+  pack picture.
+
 # Project Oogie 0.2.8 test 3
 
 - **Packs switched off by mistake work again.** Test 1 listed the texture

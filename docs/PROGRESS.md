@@ -383,3 +383,10 @@ See docs/IMPROVEMENT_PLAN.md.
 - Test tools: scripts/hitscan.py, hitrec.py, moverec.py, compdump.py, symbolize.py; mem_poke.ps1 -Frames/-Reads (game frames, no window shots).
 - The high frame rate prototype (GPU replay; replay 1 ms instead of 8-10; still too slow on the test laptop, whose own frame already takes 18 ms) is kept out of the release: build_out/research/interp/ (patch, notes, test rows). Next step there: move the in-between work to a second thread.
 - Release notes: docs/RELEASE_NOTES_0.2.6.md; reply drafts trailer/v026_issue6_reply.md, trailer/v026_issue3_reply.md (not posted).
+
+## 2026-11-05 night: 0.2.8 release work (GitHub #10, owner's Shadow Oogie and Casino reports)
+- Owner confirmed 0.2.8 test 3 works with the packs in Quiver Launcher; asked for a public 0.2.8 by morning with #10 fixed, full approval for the night.
+- #96 Fire King invisible: the game paints lava onto his body texture through a render target at the texture's address; targets now start from the picture in guest memory (rt_seed) and a smaller texture samples its own rectangle (rt_sub_view). Verified cf20fix2.
+- #97 cutscene cameras: geometry nearer than the near plane covered the screen (dt41 grey), a card behind the Casino camera came out as a sheet (vertex depth clamped before clipping), no face culling at all. Depth now unclamped with clip distances under the title's SET_ZMIN_MAX_CONTROL, culling from the title's state, strips with one facing. Verified cs20fin, cs17lin.
+- #98 Shadow Oogie see-through with the HD pack: wrong-alpha pairings in ps2_hd.map; scripts/audit_texmap.py checked all 847 rows, 4 removed, 2 alpha flags fixed; opaque disc pictures stay opaque. Verified so_hd3.
+- New test tools: scripts/chapter_frames.ps1 (start a chapter, a frame every N s, optional probe), contact_sheet.py, frames_sweep.ps1, audit_texmap.py; back-end switches OOGIE_RT_TRACE, OOGIE_RT_DUMP, OOGIE_SKIP_TEXS; the texture probe also runs the CPU vertex interpreter on GPU-path inputs.

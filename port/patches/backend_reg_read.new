@@ -1,0 +1,10 @@
+/* Oogie patch (port/patches/backend_reg_read): the last value the title
+ * wrote to a 3D-class method (register mirror), for state the back-end
+ * interface does not carry, e.g. SET_ZMIN_MAX_CONTROL (0x1D78, #97). */
+uint32_t oogie_backend_reg(uint32_t method)
+{
+    return s_reg[(method & 0x1FFCu) / 4];
+}
+
+int nv2a_backend_decode_texture(const Nv2aTexture *tex, uint32_t *argb_out)
+{

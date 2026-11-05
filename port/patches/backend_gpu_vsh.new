@@ -66,7 +66,7 @@ static int oogie_gpu_vsh_batch(void)
         for (i = 0; i + 2 < n; i += 3) GVSH_TRI(i, i + 1, i + 2);
         break;
     case NV_PRIM_TRIANGLE_STRIP:
-        for (i = 0; i + 2 < n; i++) GVSH_TRI(i, i + 1, i + 2);
+        for (i = 0; i + 2 < n; i++) { if (i & 1) GVSH_TRI(i + 1, i, i + 2); else GVSH_TRI(i, i + 1, i + 2); }
         break;
     case NV_PRIM_TRIANGLE_FAN:
     case NV_PRIM_POLYGON:

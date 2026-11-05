@@ -48,7 +48,19 @@ REJECT = {
     ("*", "128x128_260b40b2e48888f5"),
     # flat blue PS2 swatches (4 files) onto the dark grey 0000.lz bg/pig/circle99.pig
     ("*", "32x32_243c52a42f7667bb"),
+    # KNOWN_ISSUES #98 (scripts\audit_texmap.py review, 2026-11-05). Shadow Oogie (sdwbgy.lz
+    # model/pig/chshba, chshbb): black pictures whose look is their alpha; the PS2 ones use alpha
+    # differently and made him partly see-through (owner, 0.2.8 test 3).
+    ("*", "512x512_7625e830cded0e7e"),
+    ("*", "512x512_d3b2f3517c72d087"),
+    # jack.lz 01/model/pig/chph1k: a yellow-orange PS2 picture onto a beige one, alpha unlike
+    ("*", "32x32_ab6da2cf225ee76b"),
+    # 0601.lz bg/pig/hi_koke moss: PS2 alpha a quarter of the Xbox's (half see-through)
+    ("*", "256x256_c38a103d6da05310"),
 }
+# Keys whose pack picture matches but whose alpha is already on the Xbox scale (doubling it made
+# them twice as strong): 0405.lz bg/filter/noise1 (screen noise), 0501.lz bg/pig/kairo48 (glow).
+NO_ALPHA2 = {"256x256_356b025ceb541168", "64x64_552ffb4eb7d3b5a0"}
 # Pack files that show PlayStation glyphs besides the button-pack names and GLYPH_ENTRIES matches
 # (found by eye on the contact sheets).
 STYLE_PS_EXTRA = {
@@ -607,7 +619,9 @@ def main():
             st = "ok" if top["score"] >= OK and len(distinct) == 1 else "check"
             flags = []
             pi = pinfo[top["pack"]]
-            if pi["amax"] <= 140:
+            if k in NO_ALPHA2:
+                pass
+            elif pi["amax"] <= 140:
                 flags.append("alpha2")
             elif pi["amax"] < 250:
                 # ambiguous: compare mean alpha with the Xbox texture (PS2 alpha is half)

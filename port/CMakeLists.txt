@@ -116,7 +116,9 @@ oogie_patch_source(xbox_kernel "${XBOXRECOMP_DIR}/src/kernel" nv2a_pb_exec.c
                    clear_rect           # #57: hand the clear rectangle to the back end
                    palette_decode       # palettised textures decode with their CLUT
                    sem_offset_decl sem_offset   # #66: a release goes to the word SET_SEMAPHORE_OFFSET names
-                   flip_done)           # #51/#57: the buffer each frame finished in, for the back end
+                   flip_done            # #51/#57: the buffer each frame finished in, for the back end
+                   strip_winding_a strip_winding_b   # #97: strips face one way, so the back end can cull
+                   backend_reg_read)    # #97: SET_ZMIN_MAX_CONTROL for near/far clipping
 # The two-second kernel call summary, off under OOGIE_QUIET_GPU (frame hitches).
 oogie_patch_source(xbox_kernel "${XBOXRECOMP_DIR}/src/kernel" kernel_bridge.c
                    kernel_summary_quiet kernel_read_quiet   # no [READ] line per disc read unless OOGIE_READ_LOG=1

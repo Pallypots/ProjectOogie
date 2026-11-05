@@ -71,7 +71,7 @@ PS2 HD TEXTURES AND BUTTON PROMPTS (optional)
   Xbox, Modern Xbox (needs that pack) or PlayStation (the game's own PS2 art
   for the menus; the dance battle icons come from the HD pack, so put it in
   mods\ too). The pack's PNG edition works as well as the DDS one.
-  F1 > Mods shows what the packs give ("HD pack: in use (831 HD textures)").
+  F1 > Mods shows what the packs give ("HD pack: in use (827 HD textures)").
   If it says a pack was found but its files could not be read, tell us.
   Needs a DirectX 11 graphics card (feature level 11_0).
 "@ | Set-Content (Join-Path $out "README.txt") -Encoding ascii

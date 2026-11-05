@@ -118,6 +118,7 @@ static volatile LONG s_closed;
 static volatile LONG s_shot_req;            /* F12 pressed: save the next shown picture */
 
 static ID3D11VertexShader *s_vs, *s_blit_vs;
+static ID3D11PixelShader *s_blita_ps;    /* blit keeping alpha (#96 rt_seed) */
 static ID3D11PixelShader *s_ps, *s_blit_ps, *s_fill_ps, *s_aa_ps, *s_sharp_ps, *s_cb_ps;
 static ID3D11InputLayout *s_layout;
 static ID3D11Buffer *s_cb;
@@ -474,7 +475,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 "struct VI { float4 p : POSITION; float4 c : COLOR0; float2 t : TEXCOORD0;\n" \
 "  float4 s : COLOR1; float2 fq : TEXCOORD1; float4 t1 : TEXCOORD2; float4 t2 : TEXCOORD3; float4 t3 : TEXCOORD4; };\n" \
 "struct VO { float4 p : SV_Position; float4 c : COLOR0; float2 t : TEXCOORD0;\n" \
-"  float4 s : COLOR1; float2 fq : TEXCOORD1; float4 t1 : TEXCOORD2; float4 t2 : TEXCOORD3; float4 t3 : TEXCOORD4; };\n" \
+"  float4 s : COLOR1; float2 fq : TEXCOORD1; float4 t1 : TEXCOORD2; float4 t2 : TEXCOORD3; float4 t3 : TEXCOORD4;\n" \
+"  float2 cd : SV_ClipDistance0; };\n" \
 "Texture2D T : register(t0); Texture2D T1 : register(t1); Texture2D T2 : register(t2); Texture2D T3 : register(t3);\n" \
 "SamplerState S : register(s0); SamplerState S1 : register(s1); SamplerState S2 : register(s2); SamplerState S3 : register(s3);\n" \
 "float4 atest(float4 c) {\n" \
@@ -491,9 +493,10 @@ HLSL_COMMON
 "VO vs(VI i) {\n"
 "  VO o; float w = (i.p.w > 1e-30) ? 1.0 / i.p.w : 1.0;\n"
 "  float x = i.p.x * rt.x * 2.0 - 1.0; float y = 1.0 - i.p.y * rt.y * 2.0;\n"
-"  float z = saturate(i.p.z * rt.z);\n"
+"  float z = i.p.z * abs(rt.z);\n"
 "  o.p = float4(x * w, y * w, z * w, w); o.c = i.c; o.t = i.t * tx.xy;\n"
-"  o.s = i.s; o.fq = i.fq; o.t1 = i.t1; o.t2 = i.t2; o.t3 = i.t3; return o; }\n"
+"  o.s = i.s; o.fq = i.fq; o.t1 = i.t1; o.t2 = i.t2; o.t3 = i.t3;\n"
+"  o.cd = float2(1.0, rt.z < 0 ? 1.0 : z * w); return o; }\n"
 "float4 ps(VO i) : SV_Target {\n"
 "  float4 c = i.c;\n"
 "  if (tx.w > 0.5) {  /* Bink YUV: Y on t0, chroma planes on t1 and t2 (BT.601) */\n"
@@ -502,12 +505,13 @@ HLSL_COMMON
 "    if (tx.w > 1.5) { float sw = cr; cr = cb; cb = sw; }\n"
 "    return float4(saturate(y + 1.596 * cr), saturate(y - 0.813 * cr - 0.391 * cb),\n"
 "                  saturate(y + 2.018 * cb), 1.0); }\n"
-"  if (tx.z > 0.5) { float4 s0 = T.Sample(S, i.t); s0.a = saturate(s0.a * tas.x); c *= s0; }\n"
+"  if (tx.z > 0.5) { float4 s0 = T.Sample(S, i.t); s0.a = tas.x < 0 ? 1.0 : saturate(s0.a * tas.x); c *= s0; }\n"
 "  return atest(saturate(c)); }\n"
 "struct BO { float4 p : SV_Position; float2 t : TEXCOORD; };\n"
 "BO bvs(uint id : SV_VertexID) { BO o; float2 t = float2((id << 1) & 2, id & 2);\n"
 "  o.t = t * rt.zw; o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
 "float4 bps(BO i) : SV_Target { return float4(T.Sample(S, i.t).rgb, 1); }\n"
+"float4 bpsa(BO i) : SV_Target { return T.Sample(S, i.t); }\n"
 /* sides of a 4:3 screen in a wide window: the picture, zoomed to the width
  * (tx.x: the part of its height shown), blurred (tx.y) and darkened */
 "float4 fbps(BO i) : SV_Target { float2 c = i.t; c.y = rt.w * 0.5 + (c.y - rt.w * 0.5) * tx.x;\n"
@@ -699,7 +703,7 @@ static void rc_stage_tex(Str *s, int st, uint32_t mode)
     else if (mode >= 1 && mode <= 3)    /* cube approximated as 2D */
     {
         sadd(s, "  float4 t%d = ptex(%s, %s, %s);\n", st, tex[st], smp[st], crd[st]);
-        sadd(s, "  t%d.a = saturate(t%d.a * tas[%d]);\n", st, st, st);
+        sadd(s, "  t%d.a = tas[%d] < 0 ? 1.0 : saturate(t%d.a * tas[%d]);\n", st, st, st, st);
     } else                               /* bump-env, dot product: zero */
         sadd(s, "  float4 t%d = float4(0, 0, 0, 0);\n", st);
 }
@@ -1074,6 +1078,10 @@ static int init_device(void)
     if (!(b = compile("bps", "ps_4_0"))) return 0;
     ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &s_blit_ps);
     ID3D10Blob_Release(b);
+    if ((b = compile("bpsa", "ps_4_0")) != NULL) {
+        ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &s_blita_ps);
+        ID3D10Blob_Release(b);
+    }
     if ((b = compile("fbps", "ps_4_0")) != NULL) {
         ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &s_fill_ps);
         ID3D10Blob_Release(b);
@@ -1114,7 +1122,7 @@ static int init_device(void)
         memset(&rd, 0, sizeof rd);
         rd.FillMode = D3D11_FILL_SOLID;
         rd.CullMode = D3D11_CULL_NONE;   /* ponytail: culling left to the executor's transform */
-        rd.DepthClipEnable = FALSE;
+        rd.DepthClipEnable = FALSE;   /* depth clamped per pixel; #97 near clipping by SV_ClipDistance */
         rd.ScissorEnable = FALSE;
         ID3D11Device_CreateRasterizerState(s_dev, &rd, &s_rs);
     }
@@ -1153,6 +1161,11 @@ typedef struct {
     uint32_t baseline;          /* 1: take guest_hash at the next flip; 2: valid */
     uint32_t checked_frame;     /* replacement check done this frame, + 1 */
     float sc;                   /* render scale: the texture is SCL(w, sc) x SCL(h, sc) */
+    /* KNOWN_ISSUES #96: an off-screen target not cleared before its first
+     * draw may be a texture the game paints over in place (the Fire King's
+     * lava): 1 until it is first sampled, then rt_seed starts it from the
+     * picture in guest memory. seed_n bytes at key hashed to seed_hash then. */
+    uint32_t seed, seed_hash, seed_n, seeded;
 } RenderTarget;
 
 typedef struct {
@@ -1454,6 +1467,8 @@ static float rt_scale(uint32_t w, uint32_t h)
     return sc;
 }
 
+static uint32_t hash_guest(uint32_t va, size_t n, int full);
+
 static RenderTarget *get_rt(const Nv2aSurface *s)
 {
     uint32_t key = PHYS(s->color_va), w, h;
@@ -1525,6 +1540,14 @@ static RenderTarget *get_rt(const Nv2aSurface *s)
         ID3D11DeviceContext_ClearRenderTargetView(s_ctx, r->rtv, black);
     }
     r->key = key; r->w = w; r->h = h; r->sc = sc;
+    if (w < 640 && !is_disp(key)) {
+        /* #96: what the game's first draws go over (a clear cancels it) */
+        uint32_t cw = s->width / (s->aa_sx ? s->aa_sx : 1), ch = s->height / (s->aa_sy ? s->aa_sy : 1);
+        r->seed = 1;
+        r->seed_n = (cw ? cw : w) * (ch ? ch : h) * 4;
+        if ((size_t)key + r->seed_n > 0x04000000u) r->seed = 0;
+        else r->seed_hash = hash_guest(key, r->seed_n, 0);
+    }
     fprintf(stderr, "[D3D11] render target %08X %ux%u (x%.2f)\n", s->color_va, w, h, sc);
     fflush(stderr);
     return r;
@@ -2607,6 +2630,155 @@ static void tex_stats_tick(void)
     fprintf(stderr, "[TEX] texture checks by MIN filter:%s\n", b);
 }
 
+/* KNOWN_ISSUES #96 (GitHub #10): the Fire King's body texture (512x256
+ * A8R8G8B8 at the address of a 512x384 target) is painted over in place
+ * every fourth frame -- a 128x128 lava picture blended onto it -- so the game
+ * sets a render target at the texture's address and draws without a clear.
+ * On the console those draws land on the texture's own pixels. Here a new
+ * target started transparent black, so the body was the lava alone, which
+ * the alpha test threw away: only the fire pieces showed. The first time such
+ * a target is sampled as a texture, the picture still in guest memory goes
+ * under what was drawn so far (that drawing goes back over it, premultiplied,
+ * as it was blended onto black). Only when guest memory there has not changed
+ * since the first draw and is not empty. OOGIE_RT_SEED=0: the old way. */
+static ID3D11BlendState *get_blend(uint32_t en, uint32_t src, uint32_t dst, uint32_t eq, uint32_t mask);
+static void set_cb(float a0, float a1, float a2, float a3, float b0, float b1, float b2,
+                   float b3, float c0, float c1, float c2, float c3);
+
+static void write_bmp(ID3D11Texture2D *src, uint32_t w, uint32_t h);
+/* OOGIE_RT_DUMP=1 (with OOGIE_SHOT_PREFIX): a seeded target before and after
+ * the seed and 240 samples later. */
+static int rt_dump_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OOGIE_RT_DUMP"); on = e && *e == '1'; }
+    return on;
+}
+
+static void rt_seed(RenderTarget *r, const Nv2aTexture *t)
+{
+    static int on = -1;
+    static ID3D11Texture2D *cp_tex; static ID3D11ShaderResourceView *cp_srv;
+    static uint32_t cp_w, cp_h, nlog;
+    uint32_t w = t->width, h = t->height, i, any = 0;
+    uint32_t *px;
+    ID3D11Texture2D *bt = NULL;
+    ID3D11ShaderResourceView *bs = NULL, *none = NULL;
+    D3D11_TEXTURE2D_DESC td;
+    D3D11_SUBRESOURCE_DATA sd;
+    D3D11_VIEWPORT vp;
+    float keep[12];
+
+    r->seed = 0;
+    if (on < 0) { const char *e = getenv("OOGIE_RT_SEED"); on = !(e && *e == '0'); }
+    if (!on || !s_blita_ps || !w || !h || w > r->w || h > r->h)
+        return;
+    if (hash_guest(r->key, r->seed_n, 0) != r->seed_hash)
+        return;                                 /* something else was loaded there since */
+    px = (uint32_t *)malloc((size_t)w * h * 4);
+    if (!px) return;
+    if (!tex_decode_fast(t, px)) { free(px); return; }
+    for (i = 0; i < w * h && !any; i++) any = px[i];
+    if (!any) { free(px); return; }             /* nothing there: a plain off-screen surface */
+    memset(&td, 0, sizeof td);
+    td.Width = w; td.Height = h; td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    sd.pSysMem = px; sd.SysMemPitch = w * 4; sd.SysMemSlicePitch = 0;
+    if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, &sd, &bt))) { free(px); return; }
+    free(px);
+    ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)bt, NULL, &bs);
+    /* what was drawn so far, to go back over the picture */
+    ID3D11Texture2D_GetDesc(r->tex, &td);
+    if (!cp_tex || cp_w != td.Width || cp_h != td.Height) {
+        if (cp_srv) { ID3D11ShaderResourceView_Release(cp_srv); cp_srv = NULL; }
+        if (cp_tex) { ID3D11Texture2D_Release(cp_tex); cp_tex = NULL; }
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &cp_tex)))
+            ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)cp_tex, NULL, &cp_srv);
+        cp_w = td.Width; cp_h = td.Height;
+    }
+    if (cp_tex) ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)cp_tex, (ID3D11Resource *)r->tex);
+    if (rt_dump_on()) write_bmp(r->tex, SCL(r->w, r->sc), SCL(r->h, r->sc));   /* before */
+    r->seeded = 1;
+    memcpy(keep, s_consts.rt, sizeof(float) * 4);
+    memcpy(keep + 4, s_consts.tx, sizeof(float) * 4);
+    memcpy(keep + 8, s_consts.at, sizeof(float) * 4);
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &none);
+    ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &r->rtv, NULL);
+    set_cb(0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0);
+    ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
+    ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_VSSetShader(s_ctx, s_blit_vs, NULL, 0);
+    ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
+    ID3D11DeviceContext_PSSetShader(s_ctx, s_blita_ps, NULL, 0);
+    ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 1, &s_samp_blit);
+    ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
+    vp.TopLeftX = 0; vp.TopLeftY = 0; vp.MinDepth = 0; vp.MaxDepth = 1;
+    vp.Width = (float)w * r->sc; vp.Height = (float)h * r->sc;
+    ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+    ID3D11DeviceContext_OMSetBlendState(s_ctx, get_blend(0, 1, 0, 0x8006, 0x01010101u), NULL, 0xFFFFFFFFu);
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &bs);
+    ID3D11DeviceContext_Draw(s_ctx, 3, 0);
+    if (cp_srv) {
+        vp.Width = (float)td.Width; vp.Height = (float)td.Height;
+        ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+        ID3D11DeviceContext_OMSetBlendState(s_ctx, get_blend(1, 0x0001, 0x0303, 0x8006, 0x01010101u), NULL, 0xFFFFFFFFu);
+        ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &cp_srv);
+        ID3D11DeviceContext_Draw(s_ctx, 3, 0);
+    }
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &none);
+    memcpy(s_consts.rt, keep, sizeof(float) * 4);
+    memcpy(s_consts.tx, keep + 4, sizeof(float) * 4);
+    memcpy(s_consts.at, keep + 8, sizeof(float) * 4);
+    ID3D11ShaderResourceView_Release(bs);
+    ID3D11Texture2D_Release(bt);
+    if (rt_dump_on()) write_bmp(r->tex, SCL(r->w, r->sc), SCL(r->h, r->sc));   /* after */
+    if (nlog++ < 32)
+        fprintf(stderr, "[D3D11] render target %08X %ux%u was drawn over a picture already in memory"
+                        " (%ux%u format %02X): started from that picture\n", r->key, r->w, r->h, w, h, t->color);
+}
+
+/* #96: a target sampled as a smaller texture. surface_dims gives any target
+ * 320 or more wide at least 4:3 rows, so the Fire King's 512x256 texture is a
+ * 512x384 target; its view covers all 384 rows, and the texture coordinates
+ * (0..1 over 256 rows) read the picture stretched by half again, onto the
+ * texture sheet's pink spare space. The texture's own rectangle is copied
+ * out (at most once a frame) and that copy is sampled. OOGIE_RT_SUB=0: off. */
+static ID3D11ShaderResourceView *rt_sub_view(RenderTarget *r, const Nv2aTexture *t)
+{
+    static struct { uint32_t key, w, h, frame; ID3D11Texture2D *tex; ID3D11ShaderResourceView *srv; } c[8];
+    static int next, on = -1;
+    uint32_t w = SCL(t->width, r->sc), h = SCL(t->height, r->sc);
+    D3D11_TEXTURE2D_DESC td;
+    D3D11_BOX box;
+    int i;
+    if (on < 0) { const char *e = getenv("OOGIE_RT_SUB"); on = !(e && *e == '0'); }
+    if (!on) return r->srv;
+    for (i = 0; i < 8; i++)
+        if (c[i].tex && c[i].key == r->key && c[i].w == w && c[i].h == h) break;
+    if (i == 8) {
+        i = next; next = (next + 1) & 7;
+        if (c[i].srv) ID3D11ShaderResourceView_Release(c[i].srv);
+        if (c[i].tex) ID3D11Texture2D_Release(c[i].tex);
+        memset(&c[i], 0, sizeof c[i]);
+        ID3D11Texture2D_GetDesc(r->tex, &td);
+        td.Width = w; td.Height = h; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &c[i].tex))) { c[i].tex = NULL; return r->srv; }
+        ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)c[i].tex, NULL, &c[i].srv);
+        c[i].key = r->key; c[i].w = w; c[i].h = h; c[i].frame = 0;
+        fprintf(stderr, "[D3D11] render target %08X %ux%u sampled as a %ux%u texture: its rectangle is used\n",
+                r->key, r->w, r->h, t->width, t->height);
+    }
+    if (c[i].frame != s_frame + 1) {
+        box.left = 0; box.top = 0; box.front = 0; box.right = w; box.bottom = h; box.back = 1;
+        ID3D11DeviceContext_CopySubresourceRegion(s_ctx, (ID3D11Resource *)c[i].tex, 0, 0, 0, 0,
+                                                  (ID3D11Resource *)r->tex, 0, &box);
+        c[i].frame = s_frame + 1;
+    }
+    return c[i].srv ? c[i].srv : r->srv;
+}
+
 static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
 {
     uint32_t key = PHYS(t->offset);
@@ -2639,8 +2811,13 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
                 r = NULL;
         }
         if (r && !rt_replaced(r)) {
+            if (r->seed) rt_seed(r, t);
+            else if (r->seeded && rt_dump_on() && ++r->seeded == 240)
+                write_bmp(r->tex, SCL(r->w, r->sc), SCL(r->h, r->sc));
             if (fog_trace_on()) fog_trace_key(s_ft.skey, s_ft.scnt, &s_ft.nsamp, r->key);
             s_last_tex_hash = 0xF0000000u | r->key;
+            if (t->width && t->height && (t->width < r->w || t->height < r->h))
+                return rt_sub_view(r, t);
             return r->srv;
         }
     }
@@ -2654,7 +2831,7 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
         }
     if (e && e->checked_frame == s_frame) {
         s_last_tex_hash = e->hash;
-        if (e->amul > 0) s_last_tex_amul = e->amul;
+        if (e->amul != 0) s_last_tex_amul = e->amul;
         return e->srv;
     }
     n = tex_bytes(t);
@@ -2662,7 +2839,7 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
     s_last_tex_hash = h;
     if (e && e->hash == h && (!e->tex || e->lv == tex_mips_wanted(t))) {
         e->checked_frame = s_frame;
-        if (e->amul > 0) s_last_tex_amul = e->amul;
+        if (e->amul != 0) s_last_tex_amul = e->amul;
         return e->srv;
     }
     if (!e) {
@@ -2709,6 +2886,17 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
         if (g_pc.tex_dump) tex_dump(ch, s_decode, t->width, t->height);
         rs = s_nrepl ? repl_find(ch, t->width, t->height, &am) : NULL;
         if (rs) {                           /* a texture pack has this one */
+            /* KNOWN_ISSUES #98 (owner, 0.2.8 test 3): a picture fully opaque
+             * on the disc stays opaque. Some PS2 pictures carry alpha the Xbox
+             * ones do not (the PS2 drew them differently): Shadow Oogie, solid
+             * black on the Xbox, came out partly see-through with the HD pack.
+             * A negative factor tells the shaders to take alpha as 1.
+             * OOGIE_PACK_ALPHA=1: the pack's own alpha always. */
+            static int own = -1;
+            uint32_t q, n = t->width * t->height, opaque = 1;
+            if (own < 0) { const char *ev = getenv("OOGIE_PACK_ALPHA"); own = ev && *ev == '1'; }
+            for (q = 0; q < n && opaque; q++) opaque = (s_decode[q] >> 24) >= 0xF8u;
+            if (opaque && !own) am = -1.0f;
             if (e->srv) ID3D11ShaderResourceView_Release(e->srv);
             if (e->tex) ID3D11Texture2D_Release(e->tex);
             e->tex = NULL;
@@ -2716,7 +2904,7 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
             e->srv = rs;
             e->hash = h;
             e->amul = am;
-            if (am > 0) s_last_tex_amul = am;
+            if (am != 0) s_last_tex_amul = am;
             e->checked_frame = s_frame;
             return e->srv;
         }
@@ -3157,7 +3345,7 @@ static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
         return;
     r = get_rt(s);
     if (!r) return;
-    if (flags & 0xF0u) { r->drawn_frame = s_frame + 1; r->baseline = 1; }
+    if (flags & 0xF0u) { r->drawn_frame = s_frame + 1; r->baseline = 1; r->seed = 0; }
     if (flash_rec_on()) {                          /* #46: clears in the draw record */
         DrawRec d;
         memset(&d, 0, sizeof d);
@@ -3328,6 +3516,79 @@ static ID3D11ShaderResourceView *hazard_copy(RenderTarget *r)
     return s_hz_srv;
 }
 
+/* KNOWN_ISSUES #97 (GitHub #10): face culling. Every draw used to be drawn
+ * with both faces ("culling left to the executor", which never culled). Most
+ * models hide that behind the depth test, but the game's stencil shadows
+ * draw each shadow volume twice, front faces counting up and back faces
+ * counting down, and rely on the GPU to drop the other side: with both sides
+ * in both passes the counts cancelled, and the shadow pass covered the
+ * picture where a volume did -- whole-screen grey when a cutscene camera sat
+ * low inside one (the Fire and Ice King cutscene, Casino Clash). The game's
+ * SET_CULL_FACE_ENABLE / SET_CULL_FACE / SET_FRONT_FACE now pick the
+ * rasterizer state (strips arrive with one facing: patch strip_winding).
+ * Screen y runs down on both sides, so the windings compare as they are.
+ * OOGIE_CULL=0: no culling (the old way); OOGIE_CULL_FLIP=1: the other
+ * facing (test switch). */
+/* #97 (GitHub #10, "camera stuck on the floor"): near-plane clipping. The
+ * shaders clamped every depth to 0..1 and depth clipping was off, so what
+ * lies between a cutscene camera and its near plane -- the ground, when the
+ * camera sits low -- was drawn at depth 0 over the whole picture: a flat grey
+ * screen in the Fire and Ice King cutscene. The NV2A clamps only when the
+ * title asks (SET_ZMIN_MAX_CONTROL ZCLAMP_EN, bit 4); otherwise it drops
+ * what falls outside the depth range. Now the register decides: the shaders
+ * pass depth through unclamped (clamping a vertex's depth before clipping
+ * bent the clipped polygon: the Casino Clash card behind the camera came out
+ * as a sheet over the picture), the rasterizer clamps per pixel as before,
+ * and in clip mode a clip distance (depth >= 0) cuts the near side; the GPU
+ * path also cuts at w = 0.001, as the CPU path does. The far side stays
+ * clamped, as before, in case a depth range is off.
+ * OOGIE_ZCLIP=0: always clamp (the old way); 1: always clip. */
+uint32_t oogie_backend_reg(uint32_t method);
+static int zclamp_now(void)
+{
+    static int mode = -2;
+    static uint32_t seen[8]; static int nseen;
+    uint32_t v;
+    int i;
+    if (mode == -2) { const char *e = getenv("OOGIE_ZCLIP"); mode = e && *e == '0' ? 1 : e && *e == '1' ? 0 : -1; }
+    if (mode >= 0) return mode;
+    v = oogie_backend_reg(0x1D78);
+    for (i = 0; i < nseen && seen[i] != v; i++) {}
+    if (i == nseen && nseen < 8) {
+        seen[nseen++] = v;
+        fprintf(stderr, "[D3D11] depth range control %08X: %s\n", v, (v & 0x10u) ? "clamp" : "clip near side");
+    }
+    return (v & 0x10u) != 0;
+}
+
+static ID3D11RasterizerState *rs_for(const Nv2aRenderState *rs)
+{
+    static ID3D11RasterizerState *c[2][2];   /* [cull front][front is CCW] */
+    static int on = -1, flip = 0;
+    int f, ccw;
+    if (on < 0) {
+        const char *e = getenv("OOGIE_CULL"), *g = getenv("OOGIE_CULL_FLIP");
+        on = !(e && *e == '0');
+        flip = g && *g == '1';
+    }
+    if (!on || !rs->cull_enable || (rs->cull_face != 0x0404 && rs->cull_face != 0x0405))
+        return s_rs;                         /* off, or FRONT_AND_BACK (not drawn on the console; rare) */
+    f = rs->cull_face == 0x0404;
+    ccw = (rs->front_face == 0x0901) ^ flip;
+    if (!c[f][ccw]) {
+        D3D11_RASTERIZER_DESC rd;
+        memset(&rd, 0, sizeof rd);
+        rd.FillMode = D3D11_FILL_SOLID;
+        rd.CullMode = f ? D3D11_CULL_FRONT : D3D11_CULL_BACK;
+        rd.FrontCounterClockwise = ccw ? TRUE : FALSE;
+        rd.DepthClipEnable = FALSE;   /* depth clamped per pixel; #97 near clipping by SV_ClipDistance */
+        rd.ScissorEnable = FALSE;
+        if (FAILED(ID3D11Device_CreateRasterizerState(s_dev, &rd, &c[f][ccw])))
+            return s_rs;
+    }
+    return c[f][ccw];
+}
+
 static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
                                const Nv2aTexture *tex0)
 {
@@ -3342,6 +3603,35 @@ static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
 
     r = get_rt(s);
     if (!r) return NULL;
+    {
+        /* OOGIE_RT_TRACE=1: the first draws into each off-screen target. */
+        static int on = -1; static uint32_t keys[64], cnt[64]; static int nk;
+        if (on < 0) { const char *e = getenv("OOGIE_RT_TRACE"); on = e && *e == '1'; }
+        if (on && r->w < 640) {
+            int k;
+            for (k = 0; k < nk && keys[k] != r->key; k++) {}
+            if (k == nk && nk < 64) { keys[nk] = r->key; cnt[nk++] = 0; }
+            if (k < 64 && cnt[k]++ < 12)
+                fprintf(stderr, "[RTTRACE] f=%u draw into %08X %ux%u clip %ux%u pitch %u bpp %u: tex %08X %ux%u fmt %02X blend %u %X %X atest %u cmask %08X zeta %08X\n",
+                        s_frame, r->key, r->w, r->h, s->width, s->height, s->pitch, s->bytes_per_pixel,
+                        tex0 ? PHYS(tex0->offset) : 0, tex0 ? tex0->width : 0, tex0 ? tex0->height : 0,
+                        tex0 ? tex0->color : 0, rs->blend_enable, rs->blend_src, rs->blend_dst,
+                        rs->alpha_test_enable, rs->color_mask, rs->zeta_va);
+        }
+    }
+    {
+        /* OOGIE_SKIP_TEXS=a,b,...: draws sampling those textures (hex
+         * addresses as the probe prints them) are not drawn (diagnostic). */
+        static int n = -1; static uint32_t sk[16];
+        int k;
+        if (n < 0) {
+            const char *e = getenv("OOGIE_SKIP_TEXS");
+            n = 0;
+            while (e && *e && n < 16) { sk[n++] = PHYS((uint32_t)strtoul(e, (char **)&e, 16)); while (*e == ',') e++; }
+        }
+        for (k = 0; k < n; k++)
+            if (tex0 && PHYS(tex0->offset) == sk[k]) return NULL;
+    }
     if (rs->zeta_va)
         d = get_dt(rs->zeta_va, r->w, r->h);
     s_consts.tas[0] = s_consts.tas[1] = s_consts.tas[2] = s_consts.tas[3] = 1.0f;
@@ -3442,6 +3732,7 @@ if (flash_rec_on()) {
     for (st = 0; st < 4; st++)
         if (!srv[st]) srv[st] = s_white_srv;
     zscale = rs->depth_max > 1.0f ? 1.0f / rs->depth_max : 1.0f / 16777215.0f;
+    if (zclamp_now()) zscale = -zscale;        /* #97: the shaders clamp depth (negative scale) */
     bind_target(r, d);
     set_cb(1.0f / (float)r->w, 1.0f / (float)r->h, zscale, s_vin_base,
            tw, th, tex0 ? 1.0f : 0.0f, (float)yuv,
@@ -3452,7 +3743,7 @@ if (flash_rec_on()) {
     ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
     ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, srv);
     ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, smp);
-    ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
+    ID3D11DeviceContext_RSSetState(s_ctx, rs_for(rs));
     bf[0] = ((rs->blend_color >> 16) & 0xFF) / 255.0f;
     bf[1] = ((rs->blend_color >> 8) & 0xFF) / 255.0f;
     bf[2] = (rs->blend_color & 0xFF) / 255.0f;
@@ -3751,8 +4042,10 @@ static char *vsh_generate(const OogieVshBatch *b)
              "      P.x = pv + (P.x - pv * P.w) * vaa.z; }\n"
              "  VO o;\n"
              "  o.p = float4((P.x * rt.x * 2.0 - 1.0) * P.w, (1.0 - P.y * rt.y * 2.0) * P.w,\n"
-             "               saturate(P.z * rt.z) * P.w, P.w);\n"
+             "               P.z * abs(rt.z) * P.w, P.w);\n"
              "  o.c = saturate(o3); o.s = o4;\n"
+             /* #97: as the CPU path, nothing at or behind w = 0.001 */
+             "  o.cd = float2(P.w - 1e-3, rt.z < 0 ? 1.0 : o.p.z);\n"
              "  o.t = o9.xy * vts[0].xy;\n"
              "  o.fq = float2(fogf(o5.x), o9.w);\n"
              "  o.t1 = float4(o10.xy * vts[1].xy, o10.zw);\n"
@@ -3860,6 +4153,9 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
                 rs->zeta_va, rs->depth_func, rs->depth_write, rs->stencil_enable, rs->stencil_func,
                 rs->stencil_ref, rs->blend_enable, rs->blend_src, rs->blend_dst,
                 rs->alpha_test_enable, rs->alpha_func, rs->alpha_ref, rs->color_mask);
+        fprintf(stderr, "[PROBE]   cull %u %X %X sten ops %X %X %X wmask %X fmask %X\n", rs->cull_enable,
+                rs->cull_face, rs->front_face, rs->stencil_fail, rs->stencil_zfail, rs->stencil_zpass,
+                rs->stencil_write_mask, rs->stencil_func_mask);
         for (v = 0; v < b->nverts && v < 4; v++) {
             char line[512]; size_t n = 0;
             for (a = 0; a < b->ninputs && n + 64 < sizeof line; a++) {
@@ -3867,6 +4163,20 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
                 n += (size_t)snprintf(line + n, sizeof line - n, " [%g %g %g %g]", f[0], f[1], f[2], f[3]);
             }
             fprintf(stderr, "[PROBE]   v%u%s\n", v, line);
+            {
+                /* the CPU interpreter on the same inputs, to compare (#97) */
+                extern int nv2a_vsh_run(const float in[16][4], void *out);
+                float in[16][4], o[4 + 4 + 4 + 4 + 16];
+                uint32_t sl, k2 = 0;
+                memset(in, 0, sizeof in);
+                for (sl = 0; sl < 16; sl++)
+                    if (b->input_mask & (1u << sl)) {
+                        memcpy(in[sl], b->inputs + ((size_t)v * b->ninputs + k2) * 4, 16);
+                        k2++;
+                    }
+                if (nv2a_vsh_run((const float (*)[4])in, o))
+                    fprintf(stderr, "[PROBE]   cpu oPos %g %g %g %g\n", o[0], o[1], o[2], o[3]);
+            }
         }
     }
     if (!(vs = vsh_shader(b)))
