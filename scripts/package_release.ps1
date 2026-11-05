@@ -68,8 +68,11 @@ PS2 HD TEXTURES AND BUTTON PROMPTS (optional)
   Documents is found too.
   F1 > Mods > PS2 HD Textures: on / off.
   F1 > Mods > Button Prompts: Automatic (follows the pad you use), Original
-  Xbox, Modern Xbox (needs that pack) or PlayStation (the game's own PS2 art,
-  no pack needed for the main prompts).
+  Xbox, Modern Xbox (needs that pack) or PlayStation (the game's own PS2 art
+  for the menus; the dance battle icons come from the HD pack, so put it in
+  mods\ too). The pack's PNG edition works as well as the DDS one.
+  F1 > Mods shows what the packs give ("HD pack: in use (831 HD textures)").
+  If it says a pack was found but its files could not be read, tell us.
   Needs a DirectX 11 graphics card (feature level 11_0).
 "@ | Set-Content (Join-Path $out "README.txt") -Encoding ascii
 $zip = Join-Path $Root ("dist\ProjectOogie-" + $(if ($Version) { $Version } else { Get-Date -Format "yyyyMMdd" }) + ".zip")

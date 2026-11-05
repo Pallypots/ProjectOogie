@@ -1,3 +1,23 @@
+# Project Oogie 0.2.8 test 2
+
+## PS2 HD textures and button prompts, fixed
+- **The packs now load wherever the game is.** The packs' own folder names
+  are about 130 characters long. Unless the game sat in a short folder, the
+  path to each texture went over Windows' old 260-character limit, so the
+  game saw the pack but could not open one file in it: no HD textures, and
+  the button choice did nothing. Packs are now read from any depth.
+- **Dance battles follow the button choice.** The dance icons (and the
+  dance gauge) now show Modern Xbox or PlayStation buttons as chosen. The
+  PlayStation dance icons come from the HD pack, so keep it in mods\ for
+  those; it no longer has to be switched on for them.
+- The packs' PNG editions work as well as the DDS ones.
+- F1 > Mods now says what the packs give, for example "HD pack: in use
+  (831 HD textures)", instead of only that a folder is there.
+
+Download the packs from RetroGenerica's page:
+https://gbatemp.net/threads/the-nightmare-before-christmas-oogies-revenge-ps2-hd-texture-pack-xbox-button-texture-pack-100-complete-updated-2024.623200/
+and put both folders, as they are, anywhere inside mods\.
+
 # Project Oogie 0.2.8 test 1
 
 A test build for the sound balance (GitHub #9). Everything else is as in 0.2.7.

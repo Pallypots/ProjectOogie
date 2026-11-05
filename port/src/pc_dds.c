@@ -5,9 +5,38 @@
  * at +28, pixel format at +76: flags +80, FourCC +84, bit count +88), then
  * a 20-byte DX10 header when the FourCC is "DX10" (DXGI format first). */
 #include "pc_dds.h"
+#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+int pc_path_wide(const char *path, wchar_t *out, int n)
+{
+    wchar_t rel[PC_LONG_PATH], full[PC_LONG_PATH];
+    DWORD L;
+    int i;
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, rel, PC_LONG_PATH)
+        && !MultiByteToWideChar(CP_ACP, 0, path, -1, rel, PC_LONG_PATH))
+        return 0;
+    if (!wcsncmp(rel, L"\\\\?\\", 4)) {
+        if ((int)wcslen(rel) >= n) return 0;
+        wcscpy(out, rel);
+        return 1;
+    }
+    for (i = 0; rel[i]; i++) if (rel[i] == L'/') rel[i] = L'\\';
+    L = GetFullPathNameW(rel, PC_LONG_PATH, full, NULL);
+    if (!L || L >= PC_LONG_PATH) return 0;
+    if (full[0] == L'\\' && full[1] == L'\\') {          /* \\server\share: \\?\UNC\server\share */
+        if ((int)L + 7 > n) return 0;
+        wcscpy(out, L"\\\\?\\UNC\\");
+        wcscat(out, full + 2);
+    } else {
+        if ((int)L + 5 > n) return 0;
+        wcscpy(out, L"\\\\?\\");
+        wcscat(out, full);
+    }
+    return 1;
+}
 
 static uint32_t rd32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
@@ -72,7 +101,10 @@ int pc_dds_load_part(const char *path, uint32_t offset, uint32_t size, PcDds *ou
     long n;
     unsigned char *b;
     memset(out, 0, sizeof *out);
-    f = fopen(path, "rb");
+    {
+        wchar_t w[PC_LONG_PATH];
+        f = pc_path_wide(path, w, PC_LONG_PATH) ? _wfopen(w, L"rb") : fopen(path, "rb");
+    }
     if (!f) return 0;
     fseek(f, 0, SEEK_END); n = ftell(f);
     if (size) {

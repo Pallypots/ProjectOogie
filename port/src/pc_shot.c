@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "pc_shot.h"
+#include "pc_dds.h"
 
 typedef struct {
     unsigned char *px;      /* 24-bit BGR rows, tightly packed */
@@ -200,11 +201,12 @@ unsigned char *pc_image_load_bgra(const char *path, unsigned *w, unsigned *h)
     IWICBitmapDecoder *dec = NULL;
     IWICBitmapFrameDecode *fr = NULL;
     IWICFormatConverter *cv = NULL;
-    WCHAR wpath[MAX_PATH];
+    WCHAR wpath[PC_LONG_PATH];
     unsigned char *px = NULL;
     UINT iw = 0, ih = 0;
     HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED), hr;
-    MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, MAX_PATH);
+    if (!pc_path_wide(path, wpath, PC_LONG_PATH))           /* long folders (pc_dds.h) */
+        MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, PC_LONG_PATH);
     hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&f);
     if (SUCCEEDED(hr)) hr = IWICImagingFactory_CreateDecoderFromFilename(f, wpath, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec);
     if (SUCCEEDED(hr)) hr = IWICBitmapDecoder_GetFrame(dec, 0, &fr);

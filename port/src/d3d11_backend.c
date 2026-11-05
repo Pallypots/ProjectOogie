@@ -1970,7 +1970,7 @@ static int rt_replaced(RenderTarget *r)
 typedef struct {
     uint64_t hash;
     uint32_t w, h;
-    char path[MAX_PATH];
+    char path[PC_LONG_PATH];        /* UTF-8, opened through pc_path_wide (no 260-character limit) */
     uint32_t off, size;             /* a DDS inside one of the game's archives (PlayStation prompts), else 0 */
     float amul;                     /* 2: the picture has PS2 alpha (0..128 = opaque) */
     ID3D11ShaderResourceView *srv;
@@ -1983,6 +1983,7 @@ static uint32_t s_repl_used;
 static float s_last_tex_amul = 1.0f;        /* get_texture: the alpha factor of what it returned */
 static int s_style_used = -1;               /* button prompts the index was built for (1..3) */
 static int s_modern_found, s_hd_found;      /* PS2 packs found at the last index */
+static int s_nhd_used, s_nbtn_used;         /* rows the last index took from them */
 
 /* The Mods page switched a mod: read the texture packs again. */
 void oogie_textures_rescan(void) { InterlockedExchange(&s_tex_rescan, 1); }
@@ -2029,7 +2030,7 @@ static TexRepl *repl_add(uint64_t hs, unsigned w, unsigned h, const char *path)
     }
     memset(&s_repl[s_nrepl], 0, sizeof(TexRepl));
     s_repl[s_nrepl].hash = hs; s_repl[s_nrepl].w = w; s_repl[s_nrepl].h = h;
-    snprintf(s_repl[s_nrepl].path, MAX_PATH, "%s", path);
+    snprintf(s_repl[s_nrepl].path, sizeof s_repl[s_nrepl].path, "%s", path);
     return &s_repl[s_nrepl++];
 }
 
@@ -2041,34 +2042,65 @@ static TexRepl *repl_add(uint64_t hs, unsigned w, unsigned h, const char *path)
  * player puts them: any folder under mods\ (or PCSX2's own textures folder)
  * holding the pack's .dds files. One with 100 files or more is taken for the
  * HD pack, a smaller one for the Modern Xbox Buttons pack. */
-static char s_hd_dir[MAX_PATH], s_btn_dir[MAX_PATH];
+static char s_hd_dir[PC_LONG_PATH], s_btn_dir[PC_LONG_PATH];
 
-static int pack_name(const char *n)   /* "<16 hex>-<hex>[-<hex>].dds" */
+/* Every path below goes through pc_path_wide: the packs' folder names are so
+ * long that a pack in mods\ ran past 260 characters in most installs, and
+ * the ANSI calls then found the folder but could not open one file in it. */
+static DWORD file_attr(const char *path)
+{
+    wchar_t w[PC_LONG_PATH];
+    return pc_path_wide(path, w, PC_LONG_PATH) ? GetFileAttributesW(w) : GetFileAttributesA(path);
+}
+
+/* FindFirstFile over a long path; names come back in UTF-8. */
+typedef struct { HANDLE h; WIN32_FIND_DATAW fd; char name[MAX_PATH * 3]; int dir; } LongFind;
+static int lf_fill(LongFind *f)
+{
+    WideCharToMultiByte(CP_UTF8, 0, f->fd.cFileName, -1, f->name, (int)sizeof f->name, NULL, NULL);
+    f->dir = (f->fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return 1;
+}
+static int lf_first(LongFind *f, const char *dir)
+{
+    wchar_t w[PC_LONG_PATH];
+    size_t L;
+    f->h = INVALID_HANDLE_VALUE;
+    if (!pc_path_wide(dir, w, PC_LONG_PATH - 3)) return 0;
+    L = wcslen(w);
+    wcscpy(w + L, L"\\*");
+    f->h = FindFirstFileW(w, &f->fd);
+    return f->h != INVALID_HANDLE_VALUE && lf_fill(f);
+}
+static int lf_next(LongFind *f) { return FindNextFileW(f->h, &f->fd) && lf_fill(f); }
+static void lf_close(LongFind *f) { if (f->h != INVALID_HANDLE_VALUE) FindClose(f->h); }
+
+static int pack_name(const char *n)   /* "<16 hex>-<hex>[-<hex>].dds" (or .png, the packs' PNG editions) */
 {
     int i;
+    size_t L = strlen(n);
     for (i = 0; i < 16; i++) if (!isxdigit((unsigned char)n[i])) return 0;
-    return n[16] == '-' && strlen(n) > 21 && !_stricmp(n + strlen(n) - 4, ".dds");
+    return n[16] == '-' && L > 21 && (!_stricmp(n + L - 4, ".dds") || !_stricmp(n + L - 4, ".png"));
 }
 
 static void pack_scan(const char *dir, int depth)
 {
-    WIN32_FIND_DATAA fd;
-    HANDLE fh;
-    char pat[MAX_PATH];
+    LongFind lf;
     int files = 0;
-    snprintf(pat, sizeof pat, "%s\\*", dir);
-    fh = FindFirstFileA(pat, &fd);
-    if (fh == INVALID_HANDLE_VALUE) return;
+    char chk[PC_LONG_PATH];
+    snprintf(chk, sizeof chk, "%s\\disabled", dir);     /* switched off on the Mods page */
+    if (file_attr(chk) != INVALID_FILE_ATTRIBUTES) return;
+    if (!lf_first(&lf, dir)) { lf_close(&lf); return; }
     do {
-        if (fd.cFileName[0] == '.') continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            char sub[MAX_PATH];
-            if (depth < 5 && (size_t)snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName) < sizeof sub)
+        if (lf.name[0] == '.') continue;
+        if (lf.dir) {
+            char sub[PC_LONG_PATH];
+            if (depth < 5 && (size_t)snprintf(sub, sizeof sub, "%s\\%s", dir, lf.name) < sizeof sub)
                 pack_scan(sub, depth + 1);
-        } else if (pack_name(fd.cFileName))
+        } else if (pack_name(lf.name))
             files++;
-    } while (FindNextFileA(fh, &fd));
-    FindClose(fh);
+    } while (lf_next(&lf));
+    lf_close(&lf);
     if (files >= 100 && !s_hd_dir[0]) snprintf(s_hd_dir, sizeof s_hd_dir, "%s", dir);
     else if (files > 0 && files < 100 && !s_btn_dir[0]) snprintf(s_btn_dir, sizeof s_btn_dir, "%s", dir);
 }
@@ -2089,7 +2121,7 @@ static void packs_find(void)
         while (L && (d[k][L - 1] == ' ' || d[k][L - 1] == '\t' || d[k][L - 1] == '\r' || d[k][L - 1] == '\n'
                      || d[k][L - 1] == '\\' || d[k][L - 1] == '"')) d[k][--L] = 0;
         if (d[k][0] == '"') memmove(d[k], d[k] + 1, L);
-        if (d[k][0] && GetFileAttributesA(d[k]) == INVALID_FILE_ATTRIBUTES) {
+        if (d[k][0] && file_attr(d[k]) == INVALID_FILE_ATTRIBUTES) {
             fprintf(stderr, "[TEXPACK] folder from settings.ini not found: %s\n", d[k]);
             d[k][0] = 0;
         }
@@ -2114,7 +2146,7 @@ static int map_load(const char *map, const char *dir, int want, int disc)
     while (fgets(line, sizeof line, f)) {
         unsigned w, h, off = 0, size = 0;
         unsigned long long hs;
-        char name[MAX_PATH], entry[128], path[MAX_PATH];
+        char name[MAX_PATH], entry[128], path[PC_LONG_PATH];
         TexRepl *r;
         int ps;
         if (line[0] == '#' || sscanf(line, "%ux%u_%16llx %259s", &w, &h, &hs, name) != 4) continue;
@@ -2129,7 +2161,12 @@ static int map_load(const char *map, const char *dir, int want, int disc)
             snprintf(path, sizeof path, "game\\%s", name);
         } else if ((size_t)snprintf(path, sizeof path, "%s\\%s", dir, name) >= sizeof path)
             continue;
-        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;
+        if (file_attr(path) == INVALID_FILE_ATTRIBUTES) {
+            size_t L = strlen(path);            /* the pack's PNG edition */
+            if (disc || L < 4 || _stricmp(path + L - 4, ".dds")) continue;
+            memcpy(path + L - 4, ".png", 4);
+            if (file_attr(path) == INVALID_FILE_ATTRIBUTES) continue;
+        }
         if (!(r = repl_add(hs, w, h, path))) continue;
         r->off = off; r->size = size;
         r->amul = strstr(line, "alpha2") ? 2.0f : 0.0f;
@@ -2151,39 +2188,37 @@ static int button_style_now(void)
 
 static void repl_index(void)
 {
-    WIN32_FIND_DATAA md, fd;
-    HANDLE mh, fh;
+    LongFind md, fd;
     int i, mods = 0, nbtn = 0, nhd = 0, bc7;
     for (i = 0; i < s_nrepl; i++) if (s_repl[i].srv) ID3D11ShaderResourceView_Release(s_repl[i].srv);
     free(s_repl); s_repl = NULL; s_nrepl = s_repl_cap = 0;
     s_style_used = 1;
+    s_nhd_used = s_nbtn_used = 0;
     if (getenv("OOGIE_NO_MODS") && *getenv("OOGIE_NO_MODS") == '1') return;
-    mh = FindFirstFileA("mods\\*", &md);
-    if (mh != INVALID_HANDLE_VALUE) {
+    if (lf_first(&md, "mods")) {
         do {
-            char pat[MAX_PATH], chk[MAX_PATH];
+            char dir[PC_LONG_PATH], chk[PC_LONG_PATH];
             int before = s_nrepl;
-            if (!(md.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || md.cFileName[0] == '.') continue;
-            snprintf(chk, sizeof chk, "mods\\%s\\disabled", md.cFileName);
-            if (GetFileAttributesA(chk) != INVALID_FILE_ATTRIBUTES) continue;
-            snprintf(pat, sizeof pat, "mods\\%s\\textures\\*", md.cFileName);
-            fh = FindFirstFileA(pat, &fd);
-            if (fh == INVALID_HANDLE_VALUE) continue;
+            if (!md.dir || md.name[0] == '.') continue;
+            snprintf(chk, sizeof chk, "mods\\%s\\disabled", md.name);
+            if (file_attr(chk) != INVALID_FILE_ATTRIBUTES) continue;
+            snprintf(dir, sizeof dir, "mods\\%s\\textures", md.name);
+            if (!lf_first(&fd, dir)) { lf_close(&fd); continue; }
             do {
                 unsigned w, h;
                 unsigned long long hs;
-                char ext[16], path[MAX_PATH];
-                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-                if (sscanf(fd.cFileName, "%ux%u_%16llx.%15s", &w, &h, &hs, ext) != 4) continue;
+                char ext[16], path[PC_LONG_PATH];
+                if (fd.dir) continue;
+                if (sscanf(fd.name, "%ux%u_%16llx.%15s", &w, &h, &hs, ext) != 4) continue;
                 if (_stricmp(ext, "png") && _stricmp(ext, "dds")) continue;
-                snprintf(path, MAX_PATH, "mods\\%s\\textures\\%s", md.cFileName, fd.cFileName);
+                snprintf(path, sizeof path, "%s\\%s", dir, fd.name);
                 repl_add(hs, w, h, path);
-            } while (FindNextFileA(fh, &fd));
-            FindClose(fh);
+            } while (lf_next(&fd));
+            lf_close(&fd);
             if (s_nrepl > before) mods++;
-        } while (FindNextFileA(mh, &md));
-        FindClose(mh);
+        } while (lf_next(&md));
     }
+    lf_close(&md);
     /* the PS2 packs: BC7, which needs feature level 11_0 */
     packs_find();
     bc7 = s_feature_level >= D3D_FEATURE_LEVEL_11_0;
@@ -2193,10 +2228,13 @@ static void repl_index(void)
     if (s_style_used == 2)
         nbtn = map_load("assets\\texpacks\\ps2_buttons.map", s_btn_dir, 2, 0);
     else if (s_style_used == 3) {
-        if (s_hd_found && g_pc.ps2_hd) nbtn = map_load("assets\\texpacks\\ps2_hd.map", s_hd_dir, 1, 0);
+        /* the HD pack's PlayStation art (the dance battle's icons, mbtl00, are
+         * only there) is used whether or not PS2 HD Textures is on */
+        if (s_hd_found) nbtn = map_load("assets\\texpacks\\ps2_hd.map", s_hd_dir, 1, 0);
         nbtn += map_load("assets\\texpacks\\ps_glyphs.map", NULL, 2, 1);    /* the disc's own PlayStation art */
     }
     if (s_hd_found && g_pc.ps2_hd) nhd = map_load("assets\\texpacks\\ps2_hd.map", s_hd_dir, 0, 0);
+    s_nhd_used = nhd; s_nbtn_used = nbtn;
     if (s_nrepl > 1) qsort(s_repl, (size_t)s_nrepl, sizeof(TexRepl), repl_cmp);
     if (s_hd_dir[0]) fprintf(stderr, "[TEXPACK] PS2 HD pack folder: %s\n", s_hd_dir);
     if (s_btn_dir[0]) fprintf(stderr, "[TEXPACK] Modern Xbox Buttons pack folder: %s\n", s_btn_dir);
@@ -2214,6 +2252,15 @@ void oogie_texpack_status(int *hd_found, int *modern_found, int *style_now)
     if (hd_found) *hd_found = s_hd_found;
     if (modern_found) *modern_found = s_modern_found;
     if (style_now) *style_now = s_style_used;
+}
+
+/* ... and how many of their pictures the index holds (a pack whose folder is
+ * there but whose files cannot be opened shows 0). */
+void oogie_texpack_counts(int *hd_found, int *modern_found, int *style_now, int *hd_used, int *btn_used)
+{
+    oogie_texpack_status(hd_found, modern_found, style_now);
+    if (hd_used) *hd_used = s_nhd_used;
+    if (btn_used) *btn_used = s_nbtn_used;
 }
 
 static ID3D11ShaderResourceView *repl_load(TexRepl *r, unsigned *iw, unsigned *ih)
@@ -2269,7 +2316,9 @@ static ID3D11ShaderResourceView *repl_find(uint64_t ch, uint32_t w, uint32_t h, 
                 unsigned iw = 0, ih = 0;
                 r->tried = 1;
                 r->srv = repl_load(r, &iw, &ih);
-                if (s_repl_used++ < 20 || !r->srv)
+                static int every = -1;              /* OOGIE_TEXPACK_LOG=1: log each one, not the first 20 */
+                if (every < 0) every = getenv("OOGIE_TEXPACK_LOG") && *getenv("OOGIE_TEXPACK_LOG") == '1';
+                if (s_repl_used++ < 20 || !r->srv || every)
                     fprintf(stderr, "[TEXPACK] %s %s (%ux%u for %ux%u)\n", r->srv ? "using" : "could not read",
                             r->path, iw, ih, w, h);
             }

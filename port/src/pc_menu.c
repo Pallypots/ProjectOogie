@@ -97,6 +97,8 @@ static const char *const s_page_names[P_COUNT] = {
 static char s_mod_name[MOD_SLOTS][64];
 static int s_mod_on[MOD_SLOTS];
 static char s_mods_status[96] = "No mods yet";
+static char s_pack_status[160] = "HD pack: not found.  Buttons: Original Xbox";
+void oogie_texpack_counts(int *hd_found, int *modern_found, int *style_now, int *hd_used, int *btn_used);
 extern void oogie_mods_rescan(void);
 extern void oogie_textures_rescan(void);   /* d3d11_backend.c */
 
@@ -313,13 +315,14 @@ static Item s_items[] = {
     { P_CHEATS, "Super Speed", "Jack runs twice as fast.",
       IT_CHOICE, &g_pc.cheat_speed, o_onoff, 2, 0, "Cheats", "super_speed" },
     { P_MODS, s_mods_status, NULL, IT_INFO },
+    { P_MODS, s_pack_status, NULL, IT_INFO },
     { P_MODS, "Open Mods Folder", "Mods go in mods\\<mod name>\\files\\ (game files) and \\textures\\ (texture packs).",
       IT_ACTION, NULL, NULL, 0, 0, NULL, NULL, NULL, 0, act_open_mods },
     { P_MODS, "Save Game Textures", "For texture packs: every texture the game shows is saved to texture_dump\\ as a PNG.",
       IT_CHOICE, &g_pc.tex_dump, o_onoff, 2, 0, "TexDump", "save_textures" },
     { P_MODS, "PS2 HD Textures", "RetroGenerica's HD texture pack for the PS2 version, if you put it in mods\\ (see README). Off: the original textures.",
       IT_CHOICE, &g_pc.ps2_hd, o_onoff, 2, 1, "TexPacks", "ps2_hd" },
-    { P_MODS, "Button Prompts", "The buttons the game shows. Modern Xbox needs the Modern Xbox Buttons pack in mods\\; PlayStation uses the game's own PS2 art.",
+    { P_MODS, "Button Prompts", "Buttons shown everywhere, the dance battles too. Modern Xbox needs the Modern Xbox Buttons pack; PlayStation needs the HD pack for the dance icons.",
       IT_CHOICE, &g_pc.button_style, o_btnstyle, 4, 0, "TexPacks", "button_prompts" },
 #define MODSLOT(k) { -1, s_mod_name[k], "Turn this mod on or off. Files the game loads from now on use the change.", \
                      IT_CHOICE, &s_mod_on[k], o_onoff, 2, 1, "Mods", s_mod_name[k] }
@@ -606,6 +609,20 @@ static void mods_scan(void)
             s_items[i].page = P_MODS;
     if (n) snprintf(s_mods_status, sizeof s_mods_status, "%d mod%s found, %d on", n, n == 1 ? "" : "s", on);
     else snprintf(s_mods_status, sizeof s_mods_status, "No mods yet");
+    {   /* what the PS2 packs actually give, not only that a folder is there */
+        int hd, modern, style, nhd, nbtn;
+        static const char *const sty[] = { "", "Original Xbox", "Modern Xbox", "PlayStation" };
+        oogie_texpack_counts(&hd, &modern, &style, &nhd, &nbtn);
+        snprintf(s_pack_status, sizeof s_pack_status, "HD pack: %s.  Buttons: %s%s",
+                 !hd ? "not found" : !g_pc.ps2_hd ? "found, switched off"
+                     : nhd ? "in use" : "found, but none of its files could be read",
+                 style >= 1 && style <= 3 ? sty[style] : "?",
+                 style >= 2 && !nbtn ? " (pack art not found)"
+                     : style == 3 && !hd ? " (the dance icons need the HD pack)" : "");
+        if (hd && g_pc.ps2_hd && nhd)
+            snprintf(s_pack_status + strlen(s_pack_status), sizeof s_pack_status - strlen(s_pack_status),
+                     " (%d HD textures)", nhd);
+    }
 }
 
 static void act_open_mods(void)
