@@ -593,8 +593,14 @@ static void mods_scan(void)
     h = FindFirstFileA("mods\\*", &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
-            char chk[MAX_PATH];
+            char chk[MAX_PATH], sub[MAX_PATH];
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.' || n >= MOD_SLOTS) continue;
+            /* only mods in the port's own layout (files\ or textures\): the PS2
+             * packs have neither and are switched by the two rows above */
+            snprintf(sub, sizeof sub, "mods\\%s\\files", fd.cFileName);
+            snprintf(chk, sizeof chk, "mods\\%s\\textures", fd.cFileName);
+            if (GetFileAttributesA(sub) == INVALID_FILE_ATTRIBUTES && GetFileAttributesA(chk) == INVALID_FILE_ATTRIBUTES)
+                continue;
             snprintf(s_mod_name[n], sizeof s_mod_name[0], "%s", fd.cFileName);
             snprintf(chk, sizeof chk, "mods\\%s\\disabled", fd.cFileName);
             s_mod_on[n] = GetFileAttributesA(chk) == INVALID_FILE_ATTRIBUTES;
@@ -1274,6 +1280,26 @@ static void text(float x, float y, float px, const char *s, UINT32 ct, UINT32 cb
     text_pass(x, y, px, s, ct, cb);
 }
 
+/* Left-aligned text kept within maxw: a long name (a mod's folder name) is
+ * drawn smaller, down to 28 px, then cut with "..." so it never runs into
+ * the value column (owner, 0.2.8 test 1: mod names covered On / Off). */
+static void text_fit(float x, float y, float px, float maxw, const char *s, UINT32 ct, UINT32 cb)
+{
+    char buf[256];
+    size_t n;
+    float p = px;
+    while (p > 28.0f && text_w(s, p) > maxw) p -= 2.0f;
+    if (text_w(s, p) <= maxw) { text(x, y + (px - p) * 0.5f, p, s, ct, cb, 0); return; }
+    snprintf(buf, sizeof buf, "%s", s);
+    n = strlen(buf);
+    if (n > sizeof buf - 4) n = sizeof buf - 4;
+    for (; n > 0; n--) {
+        strcpy(buf + n, "...");
+        if (text_w(buf, p) <= maxw) break;
+    }
+    text(x, y + (px - p) * 0.5f, p, buf, ct, cb, 0);
+}
+
 static void moon(float cx, float cy, float r, UINT32 c)
 {
     quad(cx - r, cy - r, cx + r, cy + r, s_moon_uv[0], s_moon_uv[1], s_moon_uv[2], s_moon_uv[3], c, c);
@@ -1399,7 +1425,13 @@ static void draw_menu(UINT W, UINT H)
                 rect(px1 - 50, y + 26, px1 - 20, y + 28, C_ORNG_T, C_ORNG_T);
             }
         }
-        text(px0 + 80, y + 6, 40, it->label, on ? C_ORNG_T : C_OLIVE_T, on ? C_ORNG_B : C_OLIVE_B, 0);
+        {   /* the name stops short of the value column (or the panel's edge) */
+            float right = it->type == IT_CHOICE || it->type == IT_KEY || it->type == IT_PAD ? px0 + 660
+                        : it->type == IT_ACTION ? px0 + 680 : px1 - 60;
+            if (it->type == IT_INFO && item_value(it, vb, sizeof vb)[0]) right = px0 + 500;
+            text_fit(px0 + 80, y + 6, 40, right - (px0 + 80), it->label,
+                     on ? C_ORNG_T : C_OLIVE_T, on ? C_ORNG_B : C_OLIVE_B);
+        }
         if (s_capture && on) {
             v = s_capture == 1 ? "Press a key...   (Esc cancels)" : "Press a button...";
             if ((now / 400) & 1) text(px0 + 700, y + 8, 36, v, C_GOLD_T, C_GOLD_B, 0);

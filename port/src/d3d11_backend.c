@@ -2087,9 +2087,9 @@ static void pack_scan(const char *dir, int depth)
 {
     LongFind lf;
     int files = 0;
-    char chk[PC_LONG_PATH];
-    snprintf(chk, sizeof chk, "%s\\disabled", dir);     /* switched off on the Mods page */
-    if (file_attr(chk) != INVALID_FILE_ATTRIBUTES) return;
+    /* A "disabled" file is not looked at: the packs are switched with PS2 HD
+     * Textures and Button Prompts only. 0.2.8 test 1 listed them among the
+     * ordinary mods too, and switching one off there left that file behind. */
     if (!lf_first(&lf, dir)) { lf_close(&lf); return; }
     do {
         if (lf.name[0] == '.') continue;

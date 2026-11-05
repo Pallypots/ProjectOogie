@@ -1,3 +1,17 @@
+# Project Oogie 0.2.8 test 3
+
+- **Packs switched off by mistake work again.** Test 1 listed the texture
+  packs among the ordinary mods with their own On / Off switch; turning one
+  off there left a file inside the pack that later builds obeyed, so the
+  buttons pack stayed off with every setting on. The packs are no longer
+  listed as ordinary mods and that leftover file is ignored: they are
+  switched only with F1 > Mods > PS2 HD Textures and Button Prompts.
+- **Long names no longer cover On / Off** in the menu: they shrink, then are
+  cut short with "...".
+- Tested in a copy of a Quiver Launcher install (a folder deeper than
+  Quiver's) with both packs dragged into mods\: all 831 HD textures and the
+  Modern Xbox buttons in use.
+
 # Project Oogie 0.2.8 test 2
 
 ## PS2 HD textures and button prompts, fixed
