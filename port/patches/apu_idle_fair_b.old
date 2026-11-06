@@ -1,0 +1,5 @@
+            d->regs[current] = d->regs[next];
+        }
+    }
+
+    vp_trace_positions(d);

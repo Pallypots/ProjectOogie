@@ -1,0 +1,6 @@
+            d->regs[current] = d->regs[next];
+        }
+    }
+
+    idle_report_one(d);
+    vp_trace_positions(d);

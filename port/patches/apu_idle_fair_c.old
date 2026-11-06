@@ -1,0 +1,3 @@
+void mcpx_apu_vp_frame(MCPXAPUState *d,
+                        float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+{

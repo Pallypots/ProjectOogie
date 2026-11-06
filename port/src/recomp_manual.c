@@ -1363,10 +1363,30 @@ void sub_001BD50A(void)
  * looping, stop; else sub_0022E980(bink) (next frame). win_run9: the opening
  * movie mv_00.bik (6775 frames, 29.97 fps, 1 audio track) stalled after 0.8 MB
  * of 156 MB was read. Log how far it gets. */
+static uint32_t guest_stdcalln(void (*fn)(void), uint32_t ret, int n, const uint32_t *args);
+extern void sub_0022E840(void);
 void sub_001A7DC0_enter(void)
 {
     static volatile LONG s_calls;
     LONG n = InterlockedIncrement(&s_calls);
+    /* GitHub #12 test: OOGIE_TEST_BINK_OFF=F turns the film's sound off at film frame F,
+     * as the game does when its music volume reaches 0 (sub_001A80D0(0)). */
+    {
+        static int off_at = -2;
+        if (off_at == -2) { const char *e = getenv("OOGIE_TEST_BINK_OFF"); off_at = e && *e ? atoi(e) : -1; }
+        if (off_at >= 0) {
+            uint32_t b = OOGIE_MEM32(0x0040B148u);
+            if (b && (int)OOGIE_MEM32(b + 0xC) >= off_at) {
+                uint32_t a[2]; a[0] = b; a[1] = 0;
+                off_at = -1;
+                fprintf(stderr, "[TEST] film sound off at frame %u\n", OOGIE_MEM32(b + 0xC));
+                fflush(stderr);
+                guest_stdcalln(sub_0022E840, 0x001A80EEu, 2, a);
+                fprintf(stderr, "[TEST] film sound off returned\n");
+                fflush(stderr);
+            }
+        }
+    }
     if (n <= 5 || (n & (n - 1)) == 0 || n % 300 == 0) {
         uint32_t bink = OOGIE_MEM32(0x0040B148u);
         fprintf(stderr, "[OOGIE] movie step #%ld playing=%u bink=0x%08X frame %u/%u\n",
@@ -1909,6 +1929,15 @@ static void oogie_dispatch_lock(int take)
  * DirectSound without the lock, as the console's ISR cuts into that loop;
  * nothing else may. */
 static volatile DWORD s_ds_poll_tid;
+/* GitHub #12: idle-voice reports seen, the last one's handle (for the forced stop line) */
+static volatile LONG s_ds_traps;
+static volatile uint32_t s_ds_last_trap;
+static volatile DWORD s_ds_trap_tid;
+static void ds_forced_report(uint32_t v, LONG traps0);
+/* For the APU's interrupt gate (patch apu_irq_poll_open): a thread is polling
+ * for a voice stop with the lock held, so the interrupt it waits for must
+ * come even if another thread (a DPC queued behind that lock) is raised. */
+int oogie_ds_polling(void) { return s_ds_poll_tid != 0; }
 /* Passes of DirectSound's DPC (sub_002088F1, the APU interrupt's follow-up:
  * it completes stopped voices from the queue at [+0x4A0], sub_0020821C).
  * A forced voice stop waits for two (#78). */
@@ -1923,12 +1952,55 @@ void sub_002088F1_enter(void)
         fprintf(stderr, "[DSV] %.1f dpc\n", dsv_ms());
 }
 
+/* OOGIE_DS_DPC_OPEN=1: a DPC too may enter without the lock during a poll (0.2.8). */
+static int getenv_ds_dpc_open(void)
+{
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("OOGIE_DS_DPC_OPEN"); v = e && *e == '1'; }
+    return v;
+}
 static void oogie_raise_enter(int allow_isr)
 {
     uint32_t o = g_ecx;
     unsigned char irql = g_fs_base ? *(volatile uint8_t *)((uintptr_t)g_xbox_mem_offset + g_fs_base + 0x24) : 0;
     uint32_t raise = irql < 2;
-    if (allow_isr && irql >= 2 && !s_is_game_thread && s_ds_poll_tid && s_dispatch_cs_state == 2   /* ISR or DPC (#55: the stop is finished by the DPC, sub_0020821C) */
+    /* GitHub #12 (Verified, fr_old: [DSOUND] forced stops with the interrupt
+     * thread's stack in EnterCriticalSection under sub_0020DD94): the check
+     * below was made once, on the way in. An ISR that arrived just before a
+     * thread began to poll in sub_0020B669 sat in the lock's queue for the
+     * whole poll, the front end stayed trapped (no sound, no reports), and
+     * the stop was forced. Such a waiter now keeps looking until the lock is
+     * free or the holder polls. OOGIE_DS_LATE_ISR=0: the old way. */
+    /* Only the ISR (IRQL above DISPATCH) comes in without the lock: it is what
+     * finishes a stop (sub_0020A73C clears 0x8000). A DPC let in the same way
+     * ran sub_0020821C beside a thread working in DirectSound, and the
+     * unguarded count at [owner+0x84] stuck above 0 (lf1: about a minute of
+     * every idle report ignored, 15% of stops forced, as in the player's log). */
+    if (allow_isr && irql >= 2 && !s_is_game_thread && s_dispatch_cs_state == 2 && s_dispatch_lock_on == 1) {
+        static int late = -1;
+        if (late < 0) { const char *e = getenv("OOGIE_DS_LATE_ISR"); late = !(e && *e == '0'); }
+        if (late && irql > 2) {
+            unsigned spins = 0;
+            while (!TryEnterCriticalSection(&s_dispatch_cs)) {
+                if (irql > 2 && s_ds_poll_tid && (DWORD)(uintptr_t)s_dispatch_cs.OwningThread == s_ds_poll_tid) {
+                    OOGIE_MEM32(o + 4) = 3u;    /* entered without the lock */
+                    g_eax = 0;
+                    g_esp += 4;
+                    return;
+                }
+                if (++spins < 200) YieldProcessor(); else SwitchToThread();
+            }
+            OOGIE_MEM32(o + 4) = raise ? 1u : 2u;
+            g_eax = raise;
+            if (raise) {
+                g_eax = xbox_KfRaiseIrql(2);
+                *(volatile uint8_t *)((uintptr_t)g_xbox_mem_offset + o) = (uint8_t)g_eax;
+            }
+            g_esp += 4;
+            return;
+        }
+    }
+    if (allow_isr && (irql > 2 || getenv_ds_dpc_open()) && irql >= 2 && !s_is_game_thread && s_ds_poll_tid && s_dispatch_cs_state == 2   /* ISR or DPC (#55: the stop is finished by the DPC, sub_0020821C) */
             && (DWORD)(uintptr_t)s_dispatch_cs.OwningThread == s_ds_poll_tid) {
         OOGIE_MEM32(o + 4) = 3u;                /* entered without the lock */
         g_eax = 0;
@@ -2114,6 +2186,7 @@ void sub_0020B669(void)
             }
             if (ds_deaf(v) && lim > deaf_ms) lim = deaf_ms;
         }
+        {   LONG traps0 = s_ds_traps;
         QueryPerformanceFrequency(&qf);
         QueryPerformanceCounter(&q0);
         while (OOGIE_MEM16(v + 0x12) & 0x8000) {
@@ -2141,6 +2214,7 @@ void sub_0020B669(void)
                 static volatile LONG n_cut;
                 cut = 1;
                 ds_deaf_add(v);
+                ds_forced_report(v, traps0);
                 OOGIE_MEM32(v + 0x78) = 0;
                 OOGIE_MEM32(v + 0x7C) = 0;
                 if (InterlockedIncrement(&n_cut) <= 20 || (n_cut & 255) == 0) {
@@ -2155,6 +2229,7 @@ void sub_0020B669(void)
             sub_0020AA01();                     /* thiscall; its ret pops it */
             if (!old && (OOGIE_MEM16(v + 0x12) & 0x8000))
                 oogie_yield();
+        }
         }
         if (was) xbox_KfRaiseIrql(was);
         if (mine) s_ds_poll_tid = 0;
@@ -3727,8 +3802,128 @@ void sub_0020A73C_enter(void)
     fprintf(stderr, "[DSV] %.1f remove obj %08X handle %s src %u list %u state %04X\n", dsv_ms(), o, hs,
             OOGIE_MEM32(g_esp + 4), (unsigned)OOGIE_MEM8(o + 0x65), (unsigned)OOGIE_MEM16(o + 0x12));
 }
+/* GitHub #12: what the sound chip shows when a voice stop has to be forced:
+ * this voice's handles (in a list?, how many finished voices stand before it,
+ * the chip's active bit and format), the idle reports during the wait, the
+ * front end's mode. First 60, then every 256th. */
+static void ds_forced_report(uint32_t v, LONG traps0)
+{
+    static volatile LONG n;
+    static const uint32_t tops[3] = { 0x2054, 0x2060, 0x206C };
+    uint32_t vp, cnt = OOGIE_MEM8(v + 0x64), i;
+    LONG k = InterlockedIncrement(&n);
+    char line[300];
+    int at = 0;
+    if (!(k <= 60 || (k & 255) == 0) || !g_apu_state) return;
+    vp = (uint32_t)mcpx_apu_mmio_read(g_apu_state, 0x202C, 4);
+    if (!vp) return;
+    at += snprintf(line + at, sizeof line - (size_t)at, "v=%08X state %04X list %u:", v,
+                   (unsigned)OOGIE_MEM16(v + 0x12), (unsigned)OOGIE_MEM8(v + 0x65));
+    for (i = 0; i < cnt && i < 3; i++) {
+        uint32_t want = OOGIE_MEM16(v + 0x0C + 2 * i), l, found = 0, pos = 0, before = 0;
+        uint32_t *rec = (uint32_t *)mcpx_apu_phys(vp + want * 0x80u);
+        for (l = 0; l < 3 && !found; l++) {
+            uint32_t h = (uint32_t)mcpx_apu_mmio_read(g_apu_state, tops[l], 4) & 0xFFFFu, c;
+            pos = 0; before = 0;
+            for (c = 0; h != 0xFFFFu && h < 256 && c < 256; c++) {
+                uint32_t *r = (uint32_t *)mcpx_apu_phys(vp + h * 0x80u);
+                if (h == want) { found = l + 1; break; }
+                if (r && !(r[0x54 / 4] & (1u << 21))) before++;
+                pos++;
+                h = r ? (r[0x7C / 4] & 0xFFFFu) : 0xFFFFu;
+            }
+        }
+        at += snprintf(line + at, sizeof line - (size_t)at, " h%u in-list %u pos %u idle-before %u par %08X fmt %08X",
+                       want, found, pos, before, rec ? rec[0x54 / 4] : 0, rec ? rec[4 / 4] : 0);
+    }
+    fprintf(stderr, "[DSOUND] forced #%ld %s; reports in the wait %ld, last h%u, FECTL %08X ISTS %08X\n", (long)k, line,
+            (long)(s_ds_traps - traps0), s_ds_last_trap,
+            (uint32_t)mcpx_apu_mmio_read(g_apu_state, 0x1100, 4), (uint32_t)mcpx_apu_mmio_read(g_apu_state, 0x1000, 4));
+    {
+        extern int xbox_IrqlRaisedCount(void);
+        fprintf(stderr, "[DSOUND] forced #%ld: raised count %d, this thread %lu game %d poller %lu, last report on thread %lu\n", (long)k,
+                xbox_IrqlRaisedCount(), GetCurrentThreadId(), (int)s_is_game_thread, (unsigned long)s_ds_poll_tid, (unsigned long)s_ds_trap_tid);
+        if (k <= 12)
+        {
+            uint32_t i2;
+            fprintf(stderr, "[DSOUND] forced #%ld guest stack:", (long)k);
+            for (i2 = 0; i2 < 64; i2++) {
+                uint32_t x = OOGIE_MEM32(g_esp + i2 * 4);
+                if (x >= 0x12000u && x < 0x25F8E0u) fprintf(stderr, " %06X", x);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+}
 void sub_00208416_enter(void)
 {
+    s_ds_last_trap = OOGIE_MEM32(g_esp + 4);
+    s_ds_trap_tid = GetCurrentThreadId();
+    InterlockedIncrement(&s_ds_traps);
+    /* GitHub #12: reports of an idle voice that DirectSound ignores, by why
+     * (the checks of sub_00208416), every 10 s when there are any. */
+    static LONG n_all, n_busy, n_fmt, n_other, n_nolist;
+    static DWORD t_last;
+    uint32_t o = g_ecx, h = OOGIE_MEM32(g_esp + 4);
+    DWORD now = GetTickCount();
+    /* GitHub #12: the count at [owner+0x84] is held only for short stretches
+     * under the lock. Reports all "busy" for over a second mean it is stuck,
+     * and every finished voice would go unreported: put it right. */
+    {
+        static DWORD busy_since, t_first; static LONG n_stuck; static int guard = -1, jam = -1;
+        if (guard < 0) {
+            const char *e = getenv("OOGIE_DS_BUSY_GUARD"), *j = getenv("OOGIE_TEST_BUSY_JAM");
+            guard = !(e && *e == '0');
+            jam = j && *j ? atoi(j) : 0;        /* test: jam the count once, S s after the first report */
+        }
+        if (!t_first) t_first = now;
+        if (jam > 0 && now - t_first >= (DWORD)jam * 1000u) {
+            jam = 0;
+            OOGIE_MEM32(o + 0x84) = 1;
+            fprintf(stderr, "[TEST] busy count jammed\n");
+        }
+        if (OOGIE_MEM32(o + 0x84)) {
+            if (!busy_since) busy_since = now;
+            else if (guard && now - busy_since > 1000) {
+                fprintf(stderr, "[DSOUND] busy count stuck at %u for %lu ms: reset (%ld so far)\n",
+                        OOGIE_MEM32(o + 0x84), now - busy_since, (long)++n_stuck);
+                OOGIE_MEM32(o + 0x84) = 0;
+                busy_since = 0;
+            }
+        } else busy_since = 0;
+    }
+    /* OOGIE_TEST_IDLE_IGNORE=S (test): S s after the first report, one voice's
+     * reports are ignored from then on, as DirectSound ignores some. */
+    {
+        static int ig = -1; static uint32_t hz = 0xFFFFFFFFu; static DWORD t0;
+        if (ig < 0) { const char *e = getenv("OOGIE_TEST_IDLE_IGNORE"); ig = e && *e ? atoi(e) : 0; }
+        if (ig) {
+            if (!t0) t0 = now;
+            if (hz == 0xFFFFFFFFu && now - t0 >= (DWORD)ig * 1000u) {
+                hz = h;
+                fprintf(stderr, "[TEST] reports of voice handle %u ignored from now on\n", h);
+            }
+            if (h == hz) { OOGIE_MEM32(g_esp + 4) = 0x100u; h = 0x100u; n_fmt++; }
+        }
+    }
+    n_all++;
+    if (h < 0x100) {
+        if (OOGIE_MEM32(o + 0x84)) n_busy++;
+        else if (OOGIE_MEM32((h << 7) + OOGIE_MEM32(0x2222A0u) + 4) & 0x800000u) n_fmt++;
+        else {
+            uint32_t v = OOGIE_MEM32(o + h * 4 + 0x88);
+            if (OOGIE_MEM16(v + 2u * OOGIE_MEM8(v + 0x64) + 0x0A) != h) n_other++;
+            else if (OOGIE_MEM32(v + 0x4C) == v + 0x4C) n_nolist++;
+        }
+    }
+    if (!t_last) t_last = now;
+    if (now - t_last >= 10000) {
+        if (n_busy + n_fmt + n_other + n_nolist)
+            fprintf(stderr, "[DSOUND] idle reports in %.0f s: %ld, ignored: %ld busy, %ld format bit, %ld other handle, %ld off list\n",
+                    (now - t_last) / 1000.0, n_all, n_busy, n_fmt, n_other, n_nolist);
+        n_all = n_busy = n_fmt = n_other = n_nolist = 0;
+        t_last = now;
+    }
     dsv_start();
     if (s_dsv && dsv_room())
         fprintf(stderr, "[DSV] %.1f trap %u\n", dsv_ms(), OOGIE_MEM32(g_esp + 4));
@@ -3814,7 +4009,41 @@ void sub_002055ED(void) { ds_trace(0x002055EDu, sub_002055ED_gen); }
 extern void sub_00205611_gen(void);
 void sub_00205611(void) { ds_trace(0x00205611u, sub_00205611_gen); }
 extern void sub_00205631_gen(void);
-void sub_00205631(void) { ds_trace(0x00205631u, sub_00205631_gen); }
+/* GitHub #12 (ending film froze the game): Bink turning a film's sound off
+ * (sub_00230D40) stops its stream, then loops on this status call until the
+ * stream reports stopped, with no time limit. In the player's session the report
+ * never came, the loop never ended, and the game thread waited on the mutex it
+ * held. Here that one loop gives up the guest CPU each pass and ends after
+ * OOGIE_BINK_STOP_MS (default 250; 0 = no limit) by reporting "stopped".
+ * OOGIE_TEST_BINK_DEAF=1: the report never comes, to test this. */
+static void bink_stop_guard(uint32_t st)
+{
+    static __declspec(thread) LONGLONG t0;
+    static int lim = -1, deaf = -1;
+    LARGE_INTEGER now, f;
+    if (lim < 0) { const char *e = getenv("OOGIE_BINK_STOP_MS"); lim = e && *e ? atoi(e) : 250; }
+    if (deaf < 0) { const char *e = getenv("OOGIE_TEST_BINK_DEAF"); deaf = e && *e == '1'; }
+    if (deaf) OOGIE_MEM32(st) = 1;
+    if (!OOGIE_MEM32(st)) { t0 = 0; return; }
+    QueryPerformanceCounter(&now);
+    if (!t0) t0 = now.QuadPart;
+    QueryPerformanceFrequency(&f);
+    if (lim > 0 && (now.QuadPart - t0) * 1000 >= (LONGLONG)lim * f.QuadPart) {
+        fprintf(stderr, "[BINK] film sound still stopping after %d ms: going on\n", lim);
+        fflush(stderr);
+        OOGIE_MEM32(st) = 0;
+        t0 = 0;
+        return;
+    }
+    oogie_yield();
+}
+void sub_00205631(void)
+{
+    uint32_t ret = OOGIE_MEM32(g_esp), st = OOGIE_MEM32(g_esp + 8);
+    ds_trace(0x00205631u, sub_00205631_gen);
+    if (ret == 0x00230DA6u)
+        bink_stop_guard(st);
+}
 extern void sub_0020566D_gen(void);
 void sub_0020566D(void) { ds_trace(0x0020566Du, sub_0020566D_gen); }
 extern void sub_002056B9_gen(void);

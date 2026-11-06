@@ -1,0 +1,7 @@
+                /* One trap at a time: once the front end is trapped, a second
+                 * idle voice in the same frame would overwrite FEDECPARAM
+                 * before the ISR has read the first. The rest trap on later
+                 * frames, after the ISR has resumed the front end. */
+                if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
+                        != NV_PAPU_FECTL_FEMETHMODE_TRAPPED)
+                    fe_method(d, SE2FE_IDLE_VOICE, v);

@@ -1,0 +1,3 @@
+extern int xbox_IrqlBlocksInterrupts(void);
+extern int oogie_ds_polling(void);
+extern int xbox_IrqlEnterInterrupt(int level);

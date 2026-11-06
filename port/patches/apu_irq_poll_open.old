@@ -1,0 +1,2 @@
+    if (xbox_IrqlBlocksInterrupts() && ++held_off <= 50)
+        return;

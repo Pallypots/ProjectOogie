@@ -1,0 +1,3 @@
+                /* One trap at a time (see idle_report_one below). */
+                if (s_idle_n < MCPX_HW_MAX_VOICES)
+                    s_idle[s_idle_n++] = v;

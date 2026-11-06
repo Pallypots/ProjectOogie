@@ -1,0 +1,4 @@
+    /* GitHub #12: not while a thread polls for a voice stop: it waits for this
+     * interrupt, and the raised thread is queued behind the lock it holds. */
+    if (xbox_IrqlBlocksInterrupts() && !oogie_ds_polling() && ++held_off <= 50)
+        return;

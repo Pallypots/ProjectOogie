@@ -1,0 +1,49 @@
+/* One trap at a time: once the front end is trapped, a second idle voice in
+ * the same frame would overwrite FEDECPARAM before the ISR has read the first.
+ * The rest trap on later frames, after the ISR has resumed the front end.
+ * GitHub #12: DirectSound ignores some of these reports, and an ignored voice
+ * stays in its list. With "first idle voice in the list" that voice came up
+ * again every frame and no idle voice behind it was ever reported: forced
+ * voice stops, lost sound effects, a Bink film waiting for ever. The console
+ * reports every idle voice, so the report now goes round all of them.
+ * OOGIE_IDLE_FAIR=0: the old order. */
+static uint16_t s_idle[MCPX_HW_MAX_VOICES];
+static int s_idle_n;
+static void idle_report_one(MCPXAPUState *d)
+{
+    static int fair = -1;
+    static int last = -1;
+    int n = s_idle_n, i, pick = 0;
+    s_idle_n = 0;
+    {   /* the most voices seen waiting, in the log every 10 s when 4 or more */
+        static int most, frames;
+        if (n > most) most = n;
+        if (++frames >= 15000) {
+            if (most >= 4)
+                fprintf(stderr, "[APU] finished voices waiting to be reported: up to %d at once\n", most);
+            most = 0;
+            frames = 0;
+        }
+    }
+    if (n == 0)
+        return;
+    if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
+            == NV_PAPU_FECTL_FEMETHMODE_TRAPPED)
+        return;
+    if (fair < 0) {
+        const char *e = getenv("OOGIE_IDLE_FAIR");
+        fair = !(e && *e == '0');
+    }
+    if (fair && last >= 0)
+        for (i = 0; i < n; i++)
+            if (s_idle[i] == (uint16_t)last) {
+                pick = (i + 1) % n;
+                break;
+            }
+    last = s_idle[pick];
+    fe_method(d, SE2FE_IDLE_VOICE, s_idle[pick]);
+}
+
+void mcpx_apu_vp_frame(MCPXAPUState *d,
+                        float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+{

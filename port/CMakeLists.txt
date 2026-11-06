@@ -150,9 +150,12 @@ oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_dsp.c
                    apu_bin_trace
                    apu_mixdown_stereo    # centre/effect sends to both sides
                    apu_doorbell_latch)   # #43: never follow a changed scratch table
+oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_core.c
+                   apu_irq_poll_decl apu_irq_poll_open)   # GitHub #12
 oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_vp.c
                    apu_route_trace apu_headroom_trace apu_headroom_trace_b apu_voice_gain
-                   apu_fecv_trace_c apu_fecv_trace_a apu_fecv_trace_b)
+                   apu_fecv_trace_c apu_fecv_trace_a apu_fecv_trace_b
+                   apu_idle_fair_a apu_idle_fair_b apu_idle_fair_c)   # GitHub #12: an ignored idle report must not hold back the rest
 # Master volume and mute from the settings menu (pc_menu.c).
 oogie_patch_source(xbox_apu "${XBOXRECOMP_DIR}/src/apu" apu_xaudio2.c
                    audio_volume)

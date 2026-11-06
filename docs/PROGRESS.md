@@ -390,3 +390,11 @@ See docs/IMPROVEMENT_PLAN.md.
 - #97 cutscene cameras: geometry nearer than the near plane covered the screen (dt41 grey), a card behind the Casino camera came out as a sheet (vertex depth clamped before clipping), no face culling at all. Depth now unclamped with clip distances under the title's SET_ZMIN_MAX_CONTROL, culling from the title's state, strips with one facing. Verified cs20fin, cs17lin.
 - #98 Shadow Oogie see-through with the HD pack: wrong-alpha pairings in ps2_hd.map; scripts/audit_texmap.py checked all 847 rows, 4 removed, 2 alpha flags fixed; opaque disc pictures stay opaque. Verified so_hd3.
 - New test tools: scripts/chapter_frames.ps1 (start a chapter, a frame every N s, optional probe), contact_sheet.py, frames_sweep.ps1, audit_texmap.py; back-end switches OOGIE_RT_TRACE, OOGIE_RT_DUMP, OOGIE_SKIP_TEXS; the texture probe also runs the CPU vertex interpreter on GPU-path inputs.
+
+## 2026-11-06 night: 0.2.9 release work (GitHub #12, "A Buggy Finale")
+- Owner gave full approval for the night, including publishing and replying on the issues.
+- #99 ending film green and red: the chroma plane landed on a leftover 512x384 render target. Format 0x13 is no longer taken for a target (Verified b12a/b12b).
+- #100 ending freeze and lost sound effects: Bink's sound stop waits with no limit on a report from the APU interrupt. Reports were held back by an ISR queued behind the polling thread's lock, by the interrupt hold-off, and by a stuck count at [owner+0x84]. All fixed, Bink wait limited (Verified fr_old, lf1, jm_noguard, jm_guard). That the player's session was in the stuck-count state is a Hypothesis.
+- New: Chapter 24 from -World "9,2,42,0" reaches the final dance, and a script can win it and run to the totals screen. scripts/chapter_frames.ps1 -StopPressOn.
+- Result: real route rel_end clean, whole-game sweep rel029 clean. Open: Oogie's first phase and the Steam Deck not tested here; the player to confirm.
+- Prototype kept out of the release as before; files restored to the working copy afterwards. Release notes: docs/RELEASE_NOTES_0.2.9.md.

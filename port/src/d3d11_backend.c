@@ -2796,7 +2796,23 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
     TexEntry *e = NULL;
 
     {
-        RenderTarget *r = find_rt_by_va(t->offset);
+        RenderTarget *r;
+        /* GitHub #12 test: OOGIE_TEST_RT_ON_FILM=1 puts a 512x384 target on the first
+         * 320x240 film plane, the state of the player's session at the ending. */
+        {
+            static int tst = -1;
+            if (tst < 0) { const char *e = getenv("OOGIE_TEST_RT_ON_FILM"); tst = e && *e == '1'; }
+            if (tst && t->color == 0x13 && t->width == 320 && t->height == 240) {
+                Nv2aSurface fs;
+                memset(&fs, 0, sizeof fs);
+                fs.color_va = t->offset; fs.width = 512; fs.height = 384;
+                fs.pitch = 512 * 4; fs.bytes_per_pixel = 4;
+                get_rt(&fs);
+                tst = 0;
+                fprintf(stderr, "[TEST] target placed on film plane %08X\n", t->offset);
+            }
+        }
+        r = find_rt_by_va(t->offset);
         /* #49: a texture the GPU cannot have rendered is not the render
          * target at its address: compressed (DXT1/3/5) or bigger than the
          * target. The Chapter 2 card (512x512 DXT5 at 0xEA4000, the 128x128
@@ -2806,7 +2822,12 @@ static ID3D11ShaderResourceView *get_texture_(const Nv2aTexture *t)
         if (r) {
             static int any = -1;
             if (any < 0) { const char *e = getenv("OOGIE_RT_ANY_FORMAT"); any = e && *e && *e != '0'; }
-            if (!any && (t->color == 0x0C || t->color == 0x0E || t->color == 0x0F
+            /* GitHub #12: nor is LIN_L8 (0x13), one byte a pixel: the films' Y/U/V
+             * planes. The ending film's 320x240 chroma plane landed on a 512x384
+             * target from earlier in the session (Y, at 640 wide, was already
+             * refused), so the picture's colour came from the old surface:
+             * flashing green and red. */
+            if (!any && (t->color == 0x0C || t->color == 0x0E || t->color == 0x0F || t->color == 0x13
                          || t->width > r->w || t->height > r->h))
                 r = NULL;
         }

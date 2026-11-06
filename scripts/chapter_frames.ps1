@@ -4,7 +4,8 @@
 #   powershell -File scripts\chapter_frames.ps1 -Chapter 20 -Name cf20 [-Seconds 120] [-Every 3] [-World "6,0,0,0"]
 # Frames: logs\<Name>\t<sec>.png. Stops the game it started.
 param([int]$Chapter = 20, [string]$Name = "cf", [int]$Seconds = 120, [double]$Every = 3,
-      [string]$World = "", [string]$Settings = "logs\settings_cheats.ini", [string]$Press = "", [int]$ProbeAt = 0, [string]$LevelFile = "stm_data\\\d{4}\.lz")
+      [string]$World = "", [string]$Settings = "logs\settings_cheats.ini", [string]$Press = "", [int]$ProbeAt = 0, [string]$LevelFile = "stm_data\\\d{4}\.lz", [string]$StopPressOn = "")
+# -StopPressOn: no more presses once this appears in the log (so a film is not skipped)
 # -LevelFile: the log pattern that means the level has loaded (chapter 9 loads no stm_data\NNNN.lz; use "jack\.lz")
 $probed = $false
 if ($ProbeAt -gt 0) { $env:OOGIE_TEXPROBE = "1" }
@@ -32,6 +33,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $Seconds -and -not $p.HasExited) {
         # texture probe (OOGIE_TEXPROBE=1): every draw of one frame and its textures in the log
         $pf = Join-Path $Root "logs\texprobe.flag"; Set-Content $pf "1"; Start-Sleep -Milliseconds 1500; Remove-Item $pf; $probed = $true
     }
+    if ($StopPressOn -and (Select-String -Path (Join-Path $Root "logs\$Name.err.log") -Pattern $StopPressOn -Quiet)) { $Press = "" }
     if ($Press) { powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "live_press.ps1") -Press $Press -Wait 0 | Out-Null }
     while (((Get-Date) - $t0).TotalSeconds -lt ($s + $Every)) { Start-Sleep -Milliseconds 100 }
 }
