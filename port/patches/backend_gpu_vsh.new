@@ -66,7 +66,9 @@ static int oogie_gpu_vsh_batch(void)
         for (i = 0; i + 2 < n; i += 3) GVSH_TRI(i, i + 1, i + 2);
         break;
     case NV_PRIM_TRIANGLE_STRIP:
-        for (i = 0; i + 2 < n; i++) { if (i & 1) GVSH_TRI(i + 1, i, i + 2); else GVSH_TRI(i, i + 1, i + 2); }
+        for (i = 0; i + 2 < n; i++) {   /* #97: every second one reversed, one facing */
+            if (i & 1) GVSH_TRI(i + 1, i, i + 2); else GVSH_TRI(i, i + 1, i + 2);
+        }
         break;
     case NV_PRIM_TRIANGLE_FAN:
     case NV_PRIM_POLYGON:
@@ -91,6 +93,8 @@ static int oogie_gpu_vsh_batch(void)
     b.nverts = n;
     b.ninputs = nin;
     b.input_mask = mask;
+    b.src_addr = (s_gpu.inline_active || !nin) ? 0 : s_gpu.attr[slot[0]].offset;
+    b.src_first = n ? s_gpu.idx[0] : 0;
     b.indices = s_gvsh_idx;
     b.nindices = ni;
     b.aa_sx = s_gpu.aa_sx;

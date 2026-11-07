@@ -43,6 +43,7 @@ typedef struct {
     int aa;              /* anti-aliasing: 0 off, 1 low, 2 high (d3d11_backend.c post_process) */
     int sharpen;         /* 0 off, 1 low, 2 medium, 3 high */
     int mipmaps;         /* mip chains for textures the game mip-filters (d3d11_backend.c tex_upload) */
+    int high_frame_rate; /* test: in-between pictures (OOGIE_INTERP), at the next start */
     int hud_edges;       /* widescreen: corner HUD pieces at the screen edges */
     int tex_dump;        /* Mods > Save Game Textures: textures to texture_dump\ */
     int ps2_hd;          /* Mods > PS2 HD Textures: the PCSX2 HD pack (assets/texpacks/ps2_hd.map) */

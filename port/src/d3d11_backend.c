@@ -88,6 +88,48 @@ typedef struct {
 } OogieVertexExtra;
 const OogieVertexExtra *oogie_backend_vertex_extra(void);
 
+/* High frame rate prototype (OOGIE_INTERP=1, docs/HIGH_FRAME_RATE.md; test
+ * only, off by default). Each frame's clears and draws are recorded and, at
+ * the flip, replayed once with matched draws' constants and vertex positions
+ * blended halfway towards the frame before; that picture is shown, and the
+ * real frame half a frame later. OOGIE_INTERP=2 shows only the in-between
+ * pictures (to check them). The draw code reads four pieces of the executor's
+ * state at draw time; during a replay these answer what was recorded. */
+static int ip_on(void)
+{
+    static int m = -1;
+    if (m < 0) { const char *e = getenv("OOGIE_INTERP"); m = e ? atoi(e) : 0; }
+    return m;
+}
+typedef struct {
+    int comb_ok; Nv2aCombiner comb; float fog[3];
+    int nstages; int st_ok[4]; Nv2aTexture st[4];
+} IpLive;
+static int s_rp_replay;                  /* replaying a recorded frame */
+static const IpLive *s_rp_live;
+static const OogieVertexExtra *s_rp_extra;
+static int ip_combiner(Nv2aCombiner *o, float fog[3])
+{
+    if (!s_rp_live) return oogie_backend_combiner(o, fog);
+    if (s_rp_live->comb_ok) { *o = s_rp_live->comb; memcpy(fog, s_rp_live->fog, sizeof s_rp_live->fog); }
+    return s_rp_live->comb_ok;
+}
+static int ip_combiner_stages(void)
+{
+    return s_rp_live ? s_rp_live->nstages : oogie_backend_combiner_stages();
+}
+static int ip_stage_texture(int st, Nv2aTexture *o)
+{
+    if (!s_rp_live) return oogie_backend_stage_texture(st, o);
+    if (st < 0 || st > 3 || !s_rp_live->st_ok[st]) return 0;
+    *o = s_rp_live->st[st];
+    return 1;
+}
+static const OogieVertexExtra *ip_vertex_extra(void)
+{
+    return s_rp_live ? s_rp_extra : oogie_backend_vertex_extra();
+}
+
 /* The pixel shader's constants (cbuffer C), 16-byte rows as HLSL packs them. */
 typedef struct {
     float rt[4], tx[4], at[4];
@@ -115,7 +157,7 @@ static UINT s_gpu_vendor;   /* the adapter's PCI vendor (render resolution Auto)
 static int s_failed, s_ready;
 static uint32_t s_frame;               /* flips so far */
 static volatile LONG s_closed;
-static volatile LONG s_shot_req;            /* F12 pressed: save the next shown picture */
+static volatile LONG s_shot_req;          /* F12 pressed: save the next shown picture */
 
 static ID3D11VertexShader *s_vs, *s_blit_vs;
 static ID3D11PixelShader *s_blita_ps;    /* blit keeping alpha (#96 rt_seed) */
@@ -947,6 +989,14 @@ static int init_device(void)
     sd.SampleDesc.Count = 1;
     sd.Windowed = TRUE;
     sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    if (ip_on()) {
+        /* Interpolation prototype: the flip model queues pictures instead of
+         * blocking each Present until the screen refreshes, so the two
+         * pictures of a frame do not hold the render thread for two
+         * refreshes (ipO: 17-29 fps at a cap of 30 on a 60 Hz screen). */
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sd.BufferCount = 3;
+    }
     {
         /* Other PCs (docs/COMPATIBILITY.md): any GPU and driver. Feature
          * levels 11.0, 10.1 and 10.0 are accepted (shaders are SM 4.0; the
@@ -3335,9 +3385,161 @@ static int clear_rect_px(const RenderTarget *r, D3D11_RECT *rc)
     return 1;
 }
 
+/* Interpolation prototype: one frame's record. Arrays live in the frame's
+ * data block, by offset (the block grows). */
+enum { IPR_CLEAR, IPR_DRAW, IPR_VSH };
+typedef struct {
+    int type;
+    Nv2aSurface s; Nv2aRenderState rs; IpLive live;
+    uint32_t flags, argb, zs;                       /* clear */
+    uint32_t count; size_t v_off, x_off; int has_x;  /* fixed-function draw */
+    int has_tex; Nv2aTexture tex;
+    OogieVshBatch b; size_t i_off, n_off, vc_off;   /* inputs, indices, the VshConsts it drew with */
+    uint64_t key; int32_t match, next_same;         /* next_same: this frame's next draw of the same name */
+    int vsh_i; uint32_t vc_i, cb_i;                 /* program, constants set, draw block (GPU replay) */
+    /* What the live draw bound (prep_draw, be_draw_vsh): the replay binds
+     * these again instead of preparing the draw a second time (ipF: that
+     * preparation was 8-10 ms a frame). SRVs hold a reference until the
+     * record is dropped. */
+    int cap_ok;
+    RenderTarget *rt; DepthTarget *dt;
+    ID3D11PixelShader *ps; ID3D11VertexShader *vs;
+    ID3D11ShaderResourceView *srv[4]; ID3D11SamplerState *smp[4];
+    ID3D11BlendState *bs; float bf[4]; ID3D11DepthStencilState *dss; UINT sref;
+    ShaderConsts consts;
+} IpRec;
+typedef struct {
+    IpRec *r; uint32_t n, cap; unsigned char *d; size_t dn, dcap; int bad;
+    size_t *vco; uint32_t nvc, cvc;                 /* offsets of the frame's distinct constant sets */
+} IpFrame;
+static IpFrame s_ipf[2];
+static int s_ipf_cur;
+static int32_t s_ip_cap = -1;            /* record being captured, or -1 */
+static LONGLONG s_ip_t_rec;              /* QPC ticks spent recording this period */
+static LARGE_INTEGER ip_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t; }
+
+/* Matching while recording: each frame keeps a table of its draws by name,
+ * the draws of one name chained in draw order, and a new draw takes the next
+ * unclaimed draw of its name in the frame before. The same pairs as sorting
+ * both frames at the flip did (name and number in draw order), without the
+ * 1.0-1.9 ms that cost (ipI-ipS). */
+#define IPT_SIZE 16384u                  /* power of two, several times the 1,900-3,800 draws of a frame */
+typedef struct { uint64_t key; int32_t head, tail, cursor; uint32_t gen; } IpSlot;
+static IpSlot *s_ipt[2];                 /* by frame, as s_ipf */
+static uint32_t s_ipt_gen[2] = { 1, 1 }; /* a slot of another generation is empty */
+static IpSlot *ipt_find(int f, uint64_t key, int add)
+{
+    IpSlot *t = s_ipt[f];
+    uint32_t h, i;
+    if (!t && !(t = s_ipt[f] = (IpSlot *)calloc(IPT_SIZE, sizeof *t))) return NULL;
+    h = (uint32_t)(key ^ (key >> 29)) & (IPT_SIZE - 1);
+    for (i = 0; i < IPT_SIZE; i++, h = (h + 1) & (IPT_SIZE - 1)) {
+        IpSlot *e = &t[h];
+        if (e->gen != s_ipt_gen[f]) {
+            if (!add) return NULL;
+            e->gen = s_ipt_gen[f]; e->key = key; e->head = e->tail = e->cursor = -1;
+            return e;
+        }
+        if (e->key == key) return e;
+    }
+    return NULL;
+}
+
+static size_t ipf_put(IpFrame *f, const void *p, size_t n)
+{
+    size_t off = f->dn, need = off + ((n + 15) & ~(size_t)15);
+    if (need > f->dcap) {
+        size_t cap = f->dcap ? f->dcap : (size_t)8 << 20;
+        unsigned char *d;
+        while (cap < need) cap *= 2;
+        if (!(d = (unsigned char *)realloc(f->d, cap))) { f->bad = 1; return 0; }
+        f->d = d; f->dcap = cap;
+    }
+    if (p) memcpy(f->d + off, p, n);
+    f->dn = need;
+    return off;
+}
+
+static IpRec *ipf_new(int type, const Nv2aSurface *s, const Nv2aRenderState *rs)
+{
+    IpFrame *f = &s_ipf[s_ipf_cur];
+    IpRec *r;
+    int st;
+    if (f->n == f->cap) {
+        uint32_t cap = f->cap ? f->cap * 2 : 4096;
+        IpRec *nr = (IpRec *)realloc(f->r, cap * sizeof *nr);
+        if (!nr) { f->bad = 1; return NULL; }
+        f->r = nr; f->cap = cap;
+    }
+    r = &f->r[f->n++];
+    memset(r, 0, sizeof *r);
+    r->type = type; r->s = *s; if (rs) r->rs = *rs; r->match = -1;
+    r->live.comb_ok = oogie_backend_combiner(&r->live.comb, r->live.fog);
+    r->live.nstages = oogie_backend_combiner_stages();
+    for (st = 1; st < 4; st++) r->live.st_ok[st] = oogie_backend_stage_texture(st, &r->live.st[st]);
+    return r;
+}
+
+static void ip_rec_clear(const Nv2aSurface *s, const Nv2aRenderState *rs, uint32_t flags, uint32_t argb, uint32_t zs)
+{
+    IpRec *r = ipf_new(IPR_CLEAR, s, rs);
+    if (r) { r->flags = flags; r->argb = argb; r->zs = zs; }
+}
+
+static void ip_rec_draw(const Nv2aSurface *s, const Nv2aBatch *b)
+{
+    IpFrame *f = &s_ipf[s_ipf_cur];
+    const OogieVertexExtra *x = oogie_backend_vertex_extra();
+    IpRec *r = ipf_new(IPR_DRAW, s, b->state);
+    if (!r) return;
+    r->count = b->count;
+    r->v_off = ipf_put(f, b->vertices, (size_t)b->count * sizeof *b->vertices);
+    if ((r->has_x = x != NULL) != 0) r->x_off = ipf_put(f, x, (size_t)b->count * sizeof *x);
+    if ((r->has_tex = b->texture != NULL) != 0) r->tex = *b->texture;
+}
+
+static void ip_rec_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs, const Nv2aTexture *tex0, const OogieVshBatch *b)
+{
+    IpFrame *f = &s_ipf[s_ipf_cur];
+    IpRec *r = ipf_new(IPR_VSH, s, rs);
+    uint64_t k = 14695981039346656037ull;
+    const unsigned char *c;
+    size_t i, n;
+    (void)k; (void)c; (void)i; (void)n;
+    if (!r) return;
+    r->b = *b;
+    if ((r->has_tex = tex0 != NULL) != 0) r->tex = *tex0;
+    r->i_off = ipf_put(f, b->ninputs ? b->inputs : NULL, (size_t)b->nverts * b->ninputs * 16);
+    r->n_off = ipf_put(f, b->indices, (size_t)b->nindices * 4);
+    s_ip_cap = f->n - 1;                     /* prep_draw and be_draw_vsh fill in what they bind */
+}
+
+/* prep_draw's end: what it bound for the vertex-program draw being recorded. */
+static void ip_cap_prep(RenderTarget *r, DepthTarget *d, ID3D11PixelShader *ps, ID3D11ShaderResourceView *const srv[4],
+                        ID3D11SamplerState *const smp[4], ID3D11BlendState *bs, const float bf[4],
+                        ID3D11DepthStencilState *dss, UINT sref)
+{
+    IpRec *c = &s_ipf[s_ipf_cur].r[s_ip_cap];
+    int st;
+    c->rt = r; c->dt = d; c->ps = ps; c->bs = bs; c->dss = dss; c->sref = sref;
+    memcpy(c->bf, bf, sizeof c->bf);
+    for (st = 0; st < 4; st++) {
+        c->srv[st] = srv[st];
+        if (srv[st]) ID3D11ShaderResourceView_AddRef(srv[st]);
+        c->smp[st] = smp[st];
+    }
+    c->consts = s_consts;
+    c->cap_ok = 1;                           /* until be_draw_vsh finishes it: 2 */
+}
+
 static void be_clear(const Nv2aSurface *s, const Nv2aRenderState *rs,
                      uint32_t flags, uint32_t argb, uint32_t zstencil)
 {
+    if (ip_on() && !s_rp_replay) {
+        LARGE_INTEGER t0 = ip_now();
+        ip_rec_clear(s, rs, flags, argb, zstencil);
+        s_ip_t_rec += ip_now().QuadPart - t0.QuadPart;
+    }
     fl_seq((flags & 0xF0u) == 0xF0u ? 'C' : 'c', PHYS(s->color_va));
     {
         /* #51 signature: a frame buffer cleared after it was drawn in this
@@ -3473,7 +3675,7 @@ static int fill_combiner(void)
     int i;
     if (s_no_rc < 0)
         s_no_rc = getenv("OOGIE_NO_RC") && *getenv("OOGIE_NO_RC") == '1';
-    if (s_no_rc || !oogie_backend_combiner(&rc, fog)) {
+    if (s_no_rc || !ip_combiner(&rc, fog)) {
         s_consts.rcs[0] = 0;
         return 0;
     }
@@ -3670,8 +3872,8 @@ static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
      * 7 stages). OOGIE_YUV_SWAP=1 swaps the chroma planes. */
     {
         Nv2aTexture t1, t2;
-        if (tex0 && tex0->color == 0x13 && oogie_backend_combiner_stages() >= 5
-            && oogie_backend_stage_texture(1, &t1) && oogie_backend_stage_texture(2, &t2)
+        if (tex0 && tex0->color == 0x13 && ip_combiner_stages() >= 5
+            && ip_stage_texture(1, &t1) && ip_stage_texture(2, &t2)
             && t1.color == 0x13 && t2.color == 0x13) {
             static int swap = -1;
             if (swap < 0) swap = getenv("OOGIE_YUV_SWAP") && *getenv("OOGIE_YUV_SWAP") == '1';
@@ -3688,7 +3890,7 @@ static RenderTarget *prep_draw(const Nv2aSurface *s, const Nv2aRenderState *rs,
     if (use_rc)
         for (st = 1; st < 4; st++) {
             Nv2aTexture t;
-            if (oogie_backend_stage_texture(st, &t)) {
+            if (ip_stage_texture(st, &t)) {
                 srv[st] = get_texture(&t);
                 s_consts.tas[st] = s_last_tex_amul;
                 smp[st] = s_samp[sampler_for(&t)];
@@ -3772,10 +3974,15 @@ if (flash_rec_on()) {
     if (rs->blend_src == 0x8003 || rs->blend_src == 0x8004
         || rs->blend_dst == 0x8003 || rs->blend_dst == 0x8004)
         bf[0] = bf[1] = bf[2] = bf[3];
-    ID3D11DeviceContext_OMSetBlendState(s_ctx,
-        get_blend(rs->blend_enable && !(rs->blend_src == 1 && rs->blend_dst == 0),
-                  rs->blend_src, rs->blend_dst, rs->blend_eq, rs->color_mask), bf, 0xFFFFFFFFu);
-    ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, get_depth(rs, d != NULL), rs->stencil_ref & 0xFF);
+    {
+        ID3D11BlendState *bs = get_blend(rs->blend_enable && !(rs->blend_src == 1 && rs->blend_dst == 0),
+                                         rs->blend_src, rs->blend_dst, rs->blend_eq, rs->color_mask);
+        ID3D11DepthStencilState *dss = get_depth(rs, d != NULL);
+        ID3D11DeviceContext_OMSetBlendState(s_ctx, bs, bf, 0xFFFFFFFFu);
+        ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, dss, rs->stencil_ref & 0xFF);
+        if (s_ip_cap >= 0)
+            ip_cap_prep(r, d, rc_ps ? rc_ps : s_ps, srv, smp, bs, bf, dss, rs->stencil_ref & 0xFF);
+    }
     return r;
 }
 
@@ -3857,17 +4064,22 @@ static void be_draw(const Nv2aSurface *s, const Nv2aBatch *b)
 
     if (!init_device() || !s->color_va || b->count < 3 || !b->vertices)
         return;
+    if (ip_on() && !s_rp_replay) {
+        LARGE_INTEGER t0 = ip_now();
+        ip_rec_draw(s, b);
+        s_ip_t_rec += ip_now().QuadPart - t0.QuadPart;
+    }
     if (s_probe)
         probe_draw(s, b);
     s_dr_vs = 0; s_dr_vc = 0; s_dr_n = b->count; s_dr_fog = 0;
     if (fog_trace_on()) {
-        const OogieVertexExtra *x = oogie_backend_vertex_extra();
+        const OogieVertexExtra *x = ip_vertex_extra();
         uint32_t i;
         s_ft.n_cpu++; s_ft.v_cpu += b->count;
         if (x) for (i = 0; i < b->count; i++) s_ft.fog_sum += x[i].fog;
         else s_ft.fog_sum += b->count;
     }
-    if (!upload_vertices(b->vertices, oogie_backend_vertex_extra(), b->count))
+    if (!upload_vertices(b->vertices, ip_vertex_extra(), b->count))
         return;
     r = prep_draw(s, b->state, b->texture);
     if (!r) return;
@@ -3900,6 +4112,9 @@ typedef struct {
 static VshConsts s_vconsts, s_vconsts_last;
 static ID3D11Buffer *s_vcb;
 static int s_vcb_valid;
+/* Interpolation replay variant of a vertex program (OOGIE_INTERP): the
+ * previous frame's constants in b2 and inputs in t9, blended by IP (b3). */
+static int s_vsh_replay;
 
 static uint32_t vf(const uint32_t *ins, int dw, int lo, int width)
 {
@@ -3931,7 +4146,7 @@ static void vsh_src(char *out, size_t cap, const uint32_t *ins, int which)
     else if (vf(ins, 3, 1, 1))
         snprintf(base, sizeof base, "cr(a0 + %u)", vf(ins, 1, 13, 8));
     else
-        snprintf(base, sizeof base, "vc[%u]", vf(ins, 1, 13, 8));
+        snprintf(base, sizeof base, s_vsh_replay ? "VC(%u)" : "vc[%u]", vf(ins, 1, 13, 8));
     snprintf(out, cap, "%s%s.%c%c%c%c", neg ? "-" : "", base, sw[(swz >> 6) & 3],
              sw[(swz >> 4) & 3], sw[(swz >> 2) & 3], sw[swz & 3]);
 }
@@ -3962,10 +4177,18 @@ static char *vsh_generate(const OogieVshBatch *b)
     Str s = { 0 };
     uint32_t i, k = 0, ins_i;
     sadd(&s, "%s", HLSL_COMMON);
-    sadd(&s, "cbuffer V : register(b1) { float4 vc[192]; float4 vaa; uint4 vfm; float4 vfp; float4 vts[4]; };\n"
-             "StructuredBuffer<float4> VIN : register(t8);\n"
-             "float4 cr(int i) { return (i >= 0 && i < 192) ? vc[i] : vc[0]; }\n"
-             "float fogf(float d) { if (vfm.x == 0) return 1.0; float px = vfp.x, py = vfp.y, f; uint m = vfm.y;\n"
+    sadd(&s, "cbuffer V : register(b1) { float4 vc[192]; float4 vaa; uint4 vfm; float4 vfp; float4 vts[4]; };\n");
+    if (s_vsh_replay)
+        sadd(&s, "cbuffer VP : register(b2) { float4 pvc[192]; };\n"
+                 "cbuffer IP : register(b3) { float4 ipp; };\n"
+                 "Buffer<float4> VIN : register(t8);\n"
+                 "Buffer<float4> PVIN : register(t9);\n"
+                 "float4 VC(int i) { return ipp.z > 0 ? lerp(pvc[i], vc[i], ipp.y) : vc[i]; }\n"
+                 "float4 cr(int i) { return (i >= 0 && i < 192) ? VC(i) : VC(0); }\n");
+    else
+        sadd(&s, "StructuredBuffer<float4> VIN : register(t8);\n"
+                 "float4 cr(int i) { return (i >= 0 && i < 192) ? vc[i] : vc[0]; }\n");
+    sadd(&s, "float fogf(float d) { if (vfm.x == 0) return 1.0; float px = vfp.x, py = vfp.y, f; uint m = vfm.y;\n"
              "  if (m == 0x800 || m == 0x802) f = px + exp2(d * py * 16.0) - 1.5;\n"
              "  else if (m == 0x801 || m == 0x803) f = px + exp2(-d * d * py * py * 32.0) - 1.5;\n"
              "  else f = px + d * py - 1.0;\n"
@@ -3973,7 +4196,11 @@ static char *vsh_generate(const OogieVshBatch *b)
              "  if (isnan(f)) f = 1.0; return saturate(f); }\n"
              "VO vsp(uint vid : SV_VertexID) {\n");
     for (i = 0; i < 16; i++) {
-        if (b->input_mask & (1u << i))
+        if (s_vsh_replay && i == 0 && (b->input_mask & 1u)) {
+            sadd(&s, "  float4 v0 = VIN[(uint)rt.w + vid * %u];\n"
+                     "  if (ipp.z > 0) v0 = lerp(PVIN[(uint)ipp.x + vid * %u], v0, ipp.y);\n", b->ninputs, b->ninputs);
+            k++;
+        } else if (b->input_mask & (1u << i))
             sadd(&s, "  float4 v%u = VIN[(uint)rt.w + vid * %u + %u];\n", i, b->ninputs, k++);
         else
             sadd(&s, "  float4 v%u = 0;\n", i);
@@ -4080,10 +4307,13 @@ typedef struct {
     uint32_t hash, ninsn, input_mask, ninputs;
     uint32_t *words;
     ID3D11VertexShader *vs;
+    ID3D11VertexShader *rvs;    /* interpolation replay variant, made on first use */
+    int rvs_failed;
 } VshShader;
 #define MAX_VSH_SHADERS 512
 static VshShader s_vsh[MAX_VSH_SHADERS];
 static int s_nvsh, s_vsh_failed;
+static int s_vsh_cur = -1;              /* table entry of the last vsh_shader result */
 
 static ID3D11VertexShader *vsh_shader(const OogieVshBatch *b)
 {
@@ -4100,11 +4330,13 @@ static ID3D11VertexShader *vsh_shader(const OogieVshBatch *b)
 #define VSH_MATCH(e) ((e)->hash == h && (e)->ninsn == b->ninsn \
                       && (e)->input_mask == b->input_mask && (e)->words \
                       && !memcmp((e)->words, w, nw * 4))
-    if (last >= 0 && VSH_MATCH(&s_vsh[last]))
+    if (last >= 0 && VSH_MATCH(&s_vsh[last])) {
+        s_vsh_cur = last;
         return s_vsh[last].vs;
+    }
     for (k = 0; k < s_nvsh; k++)
         if (VSH_MATCH(&s_vsh[k])) {
-            last = k;
+            s_vsh_cur = last = k;
             return s_vsh[k].vs;
         }
 #undef VSH_MATCH
@@ -4130,11 +4362,41 @@ static ID3D11VertexShader *vsh_shader(const OogieVshBatch *b)
     if (err) ID3D10Blob_Release(err);
     free(src);
     if (!e->words) { e->vs = NULL; return NULL; }
-    last = s_nvsh++;
+    s_vsh_cur = last = s_nvsh++;
     if (s_nvsh <= 8 || (s_nvsh & (s_nvsh - 1)) == 0)
         fprintf(stderr, "[D3D11] vertex programs: %d (shaders: %u compiled in %.0f ms, %u from the disk cache)\n",
                 s_nvsh, s_sh_compiled, s_sh_compile_ms, s_sh_loaded);
     return e->vs;
+}
+
+/* The replay variant of table entry i (NULL: the old replay draws it). */
+static ID3D11VertexShader *vsh_replay_shader(int i)
+{
+    VshShader *e;
+    OogieVshBatch b;
+    ID3DBlob *code = NULL, *err = NULL;
+    char *src;
+    if (i < 0 || i >= s_nvsh) return NULL;
+    e = &s_vsh[i];
+    if (e->rvs || e->rvs_failed) return e->rvs;
+    memset(&b, 0, sizeof b);
+    b.program = (const uint32_t (*)[4])e->words;
+    b.ninsn = e->ninsn; b.input_mask = e->input_mask; b.ninputs = e->ninputs;
+    s_vsh_replay = 1;
+    src = vsh_generate(&b);
+    s_vsh_replay = 0;
+    if (!src || FAILED(compile_cached(src, strlen(src), "oogie_vsh_ip", "vsp", "vs_4_0", &code, &err))
+        || FAILED(ID3D11Device_CreateVertexShader(s_dev, ID3D10Blob_GetBufferPointer(code),
+                                                  ID3D10Blob_GetBufferSize(code), NULL, &e->rvs))) {
+        e->rvs = NULL;
+        e->rvs_failed = 1;
+        fprintf(stderr, "[INTERP] replay variant of vertex program %d failed: %s\n", i,
+                err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "?");
+    }
+    if (code) ID3D10Blob_Release(code);
+    if (err) ID3D10Blob_Release(err);
+    free(src);
+    return e->rvs;
 }
 
 static int fill_buffer(ID3D11Buffer *buf, const void *data, UINT bytes)
@@ -4145,6 +4407,284 @@ static int fill_buffer(ID3D11Buffer *buf, const void *data, UINT bytes)
     memcpy(m.pData, data, bytes);
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)buf, 0);
     return 1;
+}
+
+/* High frame rate feasibility probe (test only, OOGIE_INTERP_PROBE=1).
+ * Interpolating extra frames (the RT64 / Ship of Harkinian method) needs
+ * each 3D draw of a frame to be found again in the next frame. A draw is
+ * named by its vertex program, stage-0 texture, vertex and index counts and
+ * its first raw (model-space) vertices; the n-th draw with a name is matched
+ * to the n-th one of the frame before. Every 60 frames: how many matched,
+ * how many moved (constants changed), names shared by several draws (matched
+ * by order, so a risk), and the constant registers that change most. */
+#define IP_MAX 4096
+#define IP_KEYS 3   /* 0 program+texture+counts+first vertices, 1 program+texture+vertex address+first index+count, 2 program+texture+counts */
+typedef struct {
+    uint64_t key[IP_KEYS]; uint32_t seq, order, chash, inl;
+    uint32_t amask; uint64_t ahash[16];   /* per vertex attribute: hash of every vertex's value */
+    float lo[3], hi[3];                   /* attribute 0 (position) bounds */
+    float c[192][4];
+} IpDraw;
+static IpDraw *s_ip[2];
+static uint32_t s_ip_n[2], s_ip_cur, s_ip_n2d, s_ip_k;
+static struct { uint64_t frames, d3d, d2d, inl, matched[IP_KEYS], dup[IP_KEYS], moved, chg[5]; uint32_t reg[192];
+                uint64_t vsame, vchg, vpos, vbounds, attr[16]; double shift; } s_ips;
+
+static int interp_probe_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OOGIE_INTERP_PROBE"); on = e && *e == '1'; }
+    return on;
+}
+
+static uint64_t ip_hash(uint64_t h, const void *p, size_t n)
+{
+    const unsigned char *c = (const unsigned char *)p;
+    while (n--) h = (h ^ *c++) * 1099511628211ull;
+    return h;
+}
+
+static void interp_record(const Nv2aTexture *tex0, const OogieVshBatch *b)
+{
+    IpDraw *d;
+    uint64_t base = 14695981039346656037ull;
+    uint32_t nv;
+    if (b->ninsn <= 4) { s_ip_n2d++; return; }          /* 2D pass-through: HUD, menus */
+    if (!s_ip[0]) {
+        s_ip[0] = (IpDraw *)calloc(IP_MAX, sizeof(IpDraw));
+        s_ip[1] = (IpDraw *)calloc(IP_MAX, sizeof(IpDraw));
+        if (!s_ip[0] || !s_ip[1]) return;
+    }
+    if (s_ip_n[s_ip_cur] >= IP_MAX) return;
+    d = &s_ip[s_ip_cur][s_ip_n[s_ip_cur]];
+    d->seq = s_ip_n[s_ip_cur]++;           /* draw order in the frame */
+    base = ip_hash(base, b->program, (size_t)b->ninsn * 16);
+    if (tex0) base = ip_hash(base, &tex0->offset, 4);
+    d->key[2] = ip_hash(ip_hash(base, &b->nverts, 4), &b->nindices, 4);
+    nv = b->nverts < 4 ? b->nverts : 4;
+    d->key[0] = b->ninputs ? ip_hash(d->key[2], b->inputs, (size_t)nv * b->ninputs * 16) : d->key[2];
+    d->key[1] = ip_hash(ip_hash(ip_hash(base, &b->src_addr, 4), &b->src_first, 4), &b->nverts, 4);
+    d->inl = !b->src_addr;
+    {   /* what the vertex data holds, per attribute */
+        uint32_t a, k = 0, v;
+        d->amask = b->input_mask;
+        memset(d->ahash, 0, sizeof d->ahash);
+        for (a = 0; a < 16; a++) {
+            uint64_t h = 14695981039346656037ull;
+            if (!(b->input_mask & (1u << a))) continue;
+            for (v = 0; v < b->nverts; v++)
+                h = ip_hash(h, b->inputs + ((size_t)v * b->ninputs + k) * 4, 16);
+            d->ahash[a] = h;
+            k++;
+        }
+        d->lo[0] = d->lo[1] = d->lo[2] = 1e30f; d->hi[0] = d->hi[1] = d->hi[2] = -1e30f;
+        if ((b->input_mask & 1) && b->ninputs)
+            for (v = 0; v < b->nverts; v++)
+                for (a = 0; a < 3; a++) {
+                    float x = b->inputs[(size_t)v * b->ninputs * 4 + a];
+                    if (x < d->lo[a]) d->lo[a] = x;
+                    if (x > d->hi[a]) d->hi[a] = x;
+                }
+    }
+    memcpy(d->c, b->constants, sizeof d->c);
+    d->chash = (uint32_t)ip_hash(14695981039346656037ull, d->c, sizeof d->c);
+}
+
+static int ip_cmp(const void *a, const void *b)
+{
+    const IpDraw *x = (const IpDraw *)a, *y = (const IpDraw *)b;
+    if (x->key[s_ip_k] != y->key[s_ip_k]) return x->key[s_ip_k] < y->key[s_ip_k] ? -1 : 1;
+    return x->order < y->order ? -1 : x->order > y->order;
+}
+
+/* Sort a frame by name k (draw order kept within a name), then number the
+ * draws of each name 0, 1, 2 ... Returns how many draws share a name. */
+static uint32_t ip_sort(IpDraw *f, uint32_t n, int k)
+{
+    uint32_t i, r, dup = 0;
+    s_ip_k = k;
+    qsort(f, n, sizeof *f, ip_cmp);
+    for (i = 0; i < n; i++) {
+        uint32_t m = 0;
+        while (i + m + 1 < n && f[i + m + 1].key[k] == f[i].key[k]) m++;
+        if (m) dup += m + 1;
+        for (r = 0; r <= m; r++) f[i + r].order = r;
+        i += m;
+    }
+    return dup;
+}
+
+static void interp_frame_end(void)
+{
+    IpDraw *cur = s_ip[s_ip_cur], *prev = s_ip[s_ip_cur ^ 1];
+    uint32_t nc = s_ip_n[s_ip_cur], np = s_ip_n[s_ip_cur ^ 1], i, j, r;
+    int k;
+    if (!cur) return;
+    s_ips.frames++; s_ips.d3d += nc; s_ips.d2d += s_ip_n2d;
+    for (i = 0; i < nc; i++) s_ips.inl += cur[i].inl;
+    /* Each name in turn; the address name (1) last, so its matches give the
+     * moved-draw figures. Order numbers are the draw order before sorting. */
+    for (k = 0; k < IP_KEYS; k++) {
+        int kk = k == 2 ? 1 : (k == 1 ? 2 : 0);
+        for (i = 0; i < nc; i++) cur[i].order = cur[i].seq;     /* draw order within a name */
+        for (i = 0; i < np; i++) prev[i].order = prev[i].seq;
+        s_ips.dup[kk] += ip_sort(cur, nc, kk);
+        ip_sort(prev, np, kk);
+        for (i = 0, j = 0; i < nc; i++) {
+            while (j < np && ip_cmp(&prev[j], &cur[i]) < 0) j++;
+            if (j < np && prev[j].key[kk] == cur[i].key[kk] && prev[j].order == cur[i].order) {
+                s_ips.matched[kk]++;
+                if (kk == 1) {   /* vertex data: which attributes changed */
+                    uint32_t a, any = 0;
+                    for (a = 0; a < 16; a++)
+                        if (prev[j].ahash[a] != cur[i].ahash[a]) { any = 1; s_ips.attr[a]++; }
+                    if (!any) s_ips.vsame++;
+                    else {
+                        s_ips.vchg++;
+                        if (prev[j].ahash[0] != cur[i].ahash[0]) {
+                            float ds = 0;
+                            s_ips.vpos++;
+                            for (a = 0; a < 3; a++) {
+                                float dd = fabsf((cur[i].lo[a] + cur[i].hi[a]) - (prev[j].lo[a] + prev[j].hi[a])) * 0.5f;
+                                if (dd > ds) ds = dd;
+                            }
+                            s_ips.shift += ds;
+                            if (memcmp(prev[j].lo, cur[i].lo, 12) || memcmp(prev[j].hi, cur[i].hi, 12)) s_ips.vbounds++;
+                        }
+                    }
+                }
+                if (kk == 1 && prev[j].chash != cur[i].chash) {
+                    uint32_t nchg = 0;
+                    s_ips.moved++;
+                    for (r = 0; r < 192; r++)
+                        if (memcmp(prev[j].c[r], cur[i].c[r], 16)) { nchg++; s_ips.reg[r]++; }
+                    s_ips.chg[nchg <= 4 ? 0 : nchg <= 8 ? 1 : nchg <= 16 ? 2 : nchg <= 64 ? 3 : 4]++;
+                }
+            }
+        }
+    }
+    if (s_ips.frames >= 60) {
+        double d = s_ips.d3d ? (double)s_ips.d3d : 1.0;
+        fprintf(stderr, "[INTERP] f=%u 60 frames: 3D draws %.0f/frame (2D %.0f), inline data %.1f%%;"
+                        " found again by contents %.1f%%, by vertex address %.1f%%, by counts only %.1f%%;"
+                        " shared names %.1f%% / %.1f%% / %.1f%%; by address: moved %.1f%% of matched,"
+                        " changing <=4/<=8/<=16/<=64/more registers %llu/%llu/%llu/%llu/%llu;"
+                        " vertex data same %.1f%%, changed %.1f%% (position changed %.1f%%, its bounds moved %.1f%%,"
+                        " mean centre shift %.3f); attributes changed a0..a15: %llu %llu %llu %llu %llu %llu %llu %llu"
+                        " %llu %llu %llu %llu %llu %llu %llu %llu\n",
+                s_frame, s_ips.d3d / 60.0, s_ips.d2d / 60.0, 100.0 * s_ips.inl / d,
+                100.0 * s_ips.matched[0] / d, 100.0 * s_ips.matched[1] / d, 100.0 * s_ips.matched[2] / d,
+                100.0 * s_ips.dup[0] / d, 100.0 * s_ips.dup[1] / d, 100.0 * s_ips.dup[2] / d,
+                s_ips.matched[1] ? 100.0 * s_ips.moved / s_ips.matched[1] : 0.0,
+                (unsigned long long)s_ips.chg[0], (unsigned long long)s_ips.chg[1], (unsigned long long)s_ips.chg[2],
+                (unsigned long long)s_ips.chg[3], (unsigned long long)s_ips.chg[4],
+                s_ips.matched[1] ? 100.0 * s_ips.vsame / s_ips.matched[1] : 0.0,
+                s_ips.matched[1] ? 100.0 * s_ips.vchg / s_ips.matched[1] : 0.0,
+                s_ips.matched[1] ? 100.0 * s_ips.vpos / s_ips.matched[1] : 0.0,
+                s_ips.matched[1] ? 100.0 * s_ips.vbounds / s_ips.matched[1] : 0.0,
+                s_ips.vpos ? s_ips.shift / s_ips.vpos : 0.0,
+                (unsigned long long)s_ips.attr[0], (unsigned long long)s_ips.attr[1], (unsigned long long)s_ips.attr[2],
+                (unsigned long long)s_ips.attr[3], (unsigned long long)s_ips.attr[4], (unsigned long long)s_ips.attr[5],
+                (unsigned long long)s_ips.attr[6], (unsigned long long)s_ips.attr[7], (unsigned long long)s_ips.attr[8],
+                (unsigned long long)s_ips.attr[9], (unsigned long long)s_ips.attr[10], (unsigned long long)s_ips.attr[11],
+                (unsigned long long)s_ips.attr[12], (unsigned long long)s_ips.attr[13], (unsigned long long)s_ips.attr[14],
+                (unsigned long long)s_ips.attr[15]);
+        memset(&s_ips, 0, sizeof s_ips);
+    }
+    s_ip_cur ^= 1;
+    s_ip_n[s_ip_cur] = 0;
+    s_ip_n2d = 0;
+}
+
+/* be_draw_vsh, just before the draw: the shader, the constants as uploaded,
+ * and the record's name (shader, texture, vertex address, first index,
+ * count: probe ip2 found 99.8-100% again in the next frame). */
+static void ip_cap_finish(ID3D11VertexShader *vs, const Nv2aTexture *tex0, const OogieVshBatch *b)
+{
+    IpFrame *f = &s_ipf[s_ipf_cur];
+    int32_t ci = s_ip_cap;
+    IpRec *c = &f->r[s_ip_cap];
+    uint64_t k = 14695981039346656037ull;
+    uintptr_t vp = (uintptr_t)vs;
+    s_ip_cap = -1;
+    if (c->cap_ok != 1) return;
+    c->vs = vs;
+    c->vsh_i = s_vsh_cur;
+    /* Draws share constants until a model changes them: keep each set once. */
+    if (!f->nvc || memcmp(f->d + f->vco[f->nvc - 1], &s_vconsts, sizeof s_vconsts)) {
+        if (f->nvc == f->cvc) {
+            uint32_t cap = f->cvc ? f->cvc * 2 : 1024;
+            size_t *n = (size_t *)realloc(f->vco, cap * sizeof *n);
+            if (!n) { f->bad = 1; return; }
+            f->vco = n; f->cvc = cap;
+        }
+        f->vco[f->nvc++] = ipf_put(f, &s_vconsts, sizeof s_vconsts);
+    }
+    c->vc_i = f->nvc - 1;
+    c->vc_off = f->vco[c->vc_i];
+    k = (k ^ (uint64_t)vp) * 1099511628211ull;
+    if (tex0) k = (k ^ tex0->offset) * 1099511628211ull;
+    k = (k ^ b->src_addr) * 1099511628211ull;
+    k = (k ^ b->src_first) * 1099511628211ull;
+    k = (k ^ b->nverts) * 1099511628211ull;
+    c->key = k;
+    c->cap_ok = 2;
+    {
+        IpSlot *e = ipt_find(s_ipf_cur, k, 1), *pe = ipt_find(s_ipf_cur ^ 1, k, 0);
+        c->next_same = -1;
+        if (e) {
+            if (e->tail >= 0) f->r[e->tail].next_same = ci; else e->head = e->cursor = ci;
+            e->tail = ci;
+        }
+        if (pe && pe->cursor >= 0) {
+            c->match = pe->cursor;
+            pe->cursor = s_ipf[s_ipf_cur ^ 1].r[pe->cursor].next_same;
+        }
+    }
+}
+
+/* Replay of one captured vertex-program draw: its inputs and constants
+ * (blended or not), everything else as the live draw bound it. */
+static void ip_fast_draw(IpRec *c, const VshConsts *vc, const float *inputs, const uint32_t *idx)
+{
+    UINT in_off = 0, ib_off = 0, in_bytes = c->b.nverts * c->b.ninputs * 16;
+    ShaderConsts k = c->consts;
+    ID3D11Buffer *cbs[2];
+    ID3D11ShaderResourceView *none[4] = { NULL, NULL, NULL, NULL };
+    D3D11_MAPPED_SUBRESOURCE m;
+    D3D11_VIEWPORT vp;
+    if (!ring_write(&s_ring_vin, in_bytes ? inputs : NULL, in_bytes ? in_bytes : 16, 16, &in_off)
+        || !ring_write(&s_ring_ib, idx, c->b.nindices * 4, 4, &ib_off))
+        return;
+    k.rt[3] = (float)(in_off / 16);
+    if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)s_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+        return;
+    memcpy(m.pData, &k, sizeof k);
+    ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)s_cb, 0);
+    if (!fill_buffer(s_vcb, vc, sizeof *vc))
+        return;
+    s_vcb_valid = 0;                         /* the live draws' upload cache no longer holds */
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, none);
+    ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &c->rt->rtv, c->dt ? c->dt->dsv : NULL);
+    vp.TopLeftX = 0; vp.TopLeftY = 0;
+    vp.Width = (float)c->rt->w * c->rt->sc; vp.Height = (float)c->rt->h * c->rt->sc;
+    vp.MinDepth = 0; vp.MaxDepth = 1;
+    ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+    ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_PSSetShader(s_ctx, c->ps, NULL, 0);
+    ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, c->srv);
+    ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, c->smp);
+    ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
+    ID3D11DeviceContext_OMSetBlendState(s_ctx, c->bs, c->bf, 0xFFFFFFFFu);
+    ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, c->dss, c->sref);
+    cbs[0] = s_cb; cbs[1] = s_vcb;
+    ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
+    ID3D11DeviceContext_IASetIndexBuffer(s_ctx, s_ring_ib.buf, DXGI_FORMAT_R32_UINT, ib_off);
+    ID3D11DeviceContext_VSSetShader(s_ctx, c->vs, NULL, 0);
+    ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 2, cbs);
+    ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 1, &s_ring_vin.srv);
+    ID3D11DeviceContext_DrawIndexed(s_ctx, c->b.nindices, 0, 0);
 }
 
 static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
@@ -4161,6 +4701,13 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
         return 0;                                  /* structured buffers: 11.0 only; the CPU path draws it */
     if (!s->color_va || b->nindices < 3)
         return 1;                                  /* nothing to draw: done */
+    if (interp_probe_on())
+        interp_record(tex0, b);
+    if (ip_on() && !s_rp_replay) {
+        LARGE_INTEGER t0 = ip_now();
+        ip_rec_vsh(s, rs, tex0, b);
+        s_ip_t_rec += ip_now().QuadPart - t0.QuadPart;
+    }
     if (s_probe) {
         /* Texture probe: the texture, and the raw inputs of small batches. */
         uint32_t v, a, ph = 2166136261u;
@@ -4200,8 +4747,10 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
             }
         }
     }
-    if (!(vs = vsh_shader(b)))
+    if (!(vs = vsh_shader(b))) {
+        s_ip_cap = -1;
         return 0;                                  /* the CPU path draws it */
+    }
     if (!ring_write(&s_ring_vin, b->ninputs ? b->inputs : NULL, in_bytes ? in_bytes : 16, 16, &in_off)
         || !ring_write(&s_ring_ib, b->indices, b->nindices * 4, 4, &ib_off))
         return 0;
@@ -4397,14 +4946,18 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
     }
     r = prep_draw(s, rs, tex0);
     s_vin_base = 0;
-    if (!r)
+    if (!r) {
+        s_ip_cap = -1;
         return 1;
+    }
     cbs[0] = s_cb; cbs[1] = s_vcb;
     ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
     ID3D11DeviceContext_IASetIndexBuffer(s_ctx, s_ring_ib.buf, DXGI_FORMAT_R32_UINT, ib_off);
     ID3D11DeviceContext_VSSetShader(s_ctx, vs, NULL, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 2, cbs);
     ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 1, &s_ring_vin.srv);
+    if (s_ip_cap >= 0)
+        ip_cap_finish(vs, tex0, b);
     ID3D11DeviceContext_DrawIndexed(s_ctx, b->nindices, 0, 0);
     r->last_frame = s_frame;
     note_frame_rt(r);
@@ -4471,6 +5024,8 @@ static void write_bmp(ID3D11Texture2D *src, uint32_t w, uint32_t h)
  * 0 turns pacing off. */
 static int s_vsync_paces;              /* vsync does the pacing this frame */
 static UINT s_sync_interval;
+static int s_ip_vs;                    /* interpolation: the screen is twice the cap, vsync spaces the two pictures */
+static UINT s_ip_iv = 1;               /* refreshes for the next picture then (1, or 2 when no in-between picture) */
 
 static void pace_flip(void)
 {
@@ -4611,7 +5166,23 @@ static void choose_sync(void)
             hz = (int)dm.dmDisplayFrequency;
     }
     s_vsync_paces = 0; s_sync_interval = 0;
+    s_ip_vs = 0;
     if (!g_pc.vsync) { pace_note(hz); return; }
+    if (ip_on()) {
+        /* Interpolation prototype: on a screen at twice the cap each picture
+         * is shown for one refresh, and Present's wait for the screen keeps
+         * the game at the cap, so nothing waits half a frame on this thread.
+         * Otherwise the timer paces both pictures. */
+        int k = g_pc.fps_cap > 0 ? (hz + g_pc.fps_cap) / (2 * g_pc.fps_cap) : 0;
+        if (k >= 1 && k <= 2 && !s_vsync_fast && abs(hz - 2 * k * g_pc.fps_cap) <= k) {
+            s_vsync_paces = 1; s_sync_interval = (UINT)(2 * k);
+            pace_note(hz);
+            s_sync_interval = s_ip_iv * (UINT)k;   /* 240 Hz: two refreshes a picture */
+            s_ip_vs = 1;
+        } else
+            pace_note(hz);
+        return;
+    }
     s_sync_interval = 1;
     if (g_pc.fps_cap > 0 && !s_vsync_fast) {
         int k = (hz + g_pc.fps_cap / 2) / g_pc.fps_cap;
@@ -4932,6 +5503,415 @@ static void debug_layer_drain(void)
     ID3D11InfoQueue_ClearStoredMessages(q);
 }
 
+/* GPU replay (docs/HIGH_FRAME_RATE.md, "next design"): each recorded frame
+ * goes to the GPU in two uploads at its flip, its data block (inputs and
+ * indices, read as t8/t9 and as the index buffer) and one constant buffer
+ * (its distinct constant sets, then a block per draw: the pixel constants
+ * and the blend). Draws bind those by offset (D3D 11.1), so the in-between
+ * picture costs no upload per draw; the previous frame's buffers are still
+ * there and the replay variant of each program blends the two. */
+#define IPG_VC_BYTES 3328u        /* VshConsts rounded up to 256 bytes (208 constants) */
+/* A draw's block: ShaderConsts, then the blend. D3D 11.1 offsets and sizes go in
+ * 256-byte steps. ShaderConsts has been 528 bytes since the PS2 texture packs
+ * (tas): at a window of 512 the pixel shader read tas as 0, so every texture's
+ * alpha was 0 in the in-between picture (hb3: a flat tint, every other picture). */
+#define IPG_CONSTS_BYTES 768u
+#define IPG_DRAW_BYTES (IPG_CONSTS_BYTES + 256u)
+typedef struct { ID3D11Buffer *data, *cb; ID3D11ShaderResourceView *srv; UINT dsize, csize; int ok; } IpGpu;
+static IpGpu s_ipg[2];
+static int s_ipg_on = -1;
+
+static int ipg_avail(void)
+{
+    if (s_ipg_on < 0) {
+        static const GUID iid1 = { 0xbb2c6faa, 0xb5fb, 0x4082, { 0x8e, 0x6b, 0x38, 0x8b, 0x8c, 0xfa, 0x90, 0xe1 } };
+        D3D11_FEATURE_DATA_D3D11_OPTIONS o;
+        const char *e = getenv("OOGIE_INTERP_GPU");
+        memset(&o, 0, sizeof o);
+        if (!s_ctx1 && FAILED(ID3D11DeviceContext_QueryInterface(s_ctx, &iid1, (void **)&s_ctx1)))
+            s_ctx1 = NULL;
+        s_ipg_on = s_ctx1 && !(e && *e == '0')
+            && SUCCEEDED(ID3D11Device_CheckFeatureSupport(s_dev, D3D11_FEATURE_D3D11_OPTIONS, &o, sizeof o))
+            && o.ConstantBufferOffsetting;
+        fprintf(stderr, "[INTERP] GPU replay (constant buffer offsets): %s\n", s_ipg_on ? "yes" : "no, old replay");
+    }
+    return s_ipg_on;
+}
+
+static int ipg_buf(ID3D11Buffer **b, ID3D11ShaderResourceView **srv, UINT *have, size_t need, UINT bind)
+{
+    D3D11_BUFFER_DESC bd;
+    UINT size;
+    if (need <= *have && *b) return 1;
+    if (srv && *srv) { ID3D11ShaderResourceView_Release(*srv); *srv = NULL; }
+    if (*b) { ID3D11Buffer_Release(*b); *b = NULL; }
+    *have = 0;
+    size = (UINT)((need + need / 2 + 0xFFFFu) & ~(size_t)0xFFFFu);
+    memset(&bd, 0, sizeof bd);
+    bd.ByteWidth = size;
+    bd.Usage = D3D11_USAGE_DYNAMIC;
+    bd.BindFlags = bind;
+    bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(ID3D11Device_CreateBuffer(s_dev, &bd, NULL, b))) {
+        fprintf(stderr, "[INTERP] GPU replay: buffer of %u bytes not made\n", size);
+        *b = NULL;
+        return 0;
+    }
+    if (srv) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd;
+        memset(&vd, 0, sizeof vd);
+        vd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        vd.Buffer.FirstElement = 0;
+        vd.Buffer.NumElements = size / 16;
+        if (FAILED(ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)*b, &vd, srv))) {
+            ID3D11Buffer_Release(*b); *b = NULL; *srv = NULL;
+            return 0;
+        }
+    }
+    *have = size;
+    return 1;
+}
+
+/* This frame to the GPU. prev: the frame before (matches set), a: blend. */
+static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int blend)
+{
+    D3D11_MAPPED_SUBRESOURCE m;
+    uint32_t i, nd = 0;
+    size_t need;
+    unsigned char *p;
+    g->ok = 0;
+    for (i = 0; i < cur->n; i++)
+        if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) cur->r[i].cb_i = nd++;
+    if (!ipg_buf(&g->data, &g->srv, &g->dsize, cur->dn + 16, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_INDEX_BUFFER))
+        return 0;
+    need = (size_t)cur->nvc * IPG_VC_BYTES + (size_t)nd * IPG_DRAW_BYTES + 256;
+    if (!ipg_buf(&g->cb, NULL, &g->csize, need, D3D11_BIND_CONSTANT_BUFFER))
+        return 0;
+    if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)g->data, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+        return 0;
+    memcpy(m.pData, cur->d, cur->dn);
+    ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)g->data, 0);
+    if (FAILED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)g->cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+        return 0;
+    p = (unsigned char *)m.pData;
+    for (i = 0; i < cur->nvc; i++)
+        memcpy(p + (size_t)i * IPG_VC_BYTES, cur->d + cur->vco[i], sizeof(VshConsts));
+    p += (size_t)cur->nvc * IPG_VC_BYTES;
+    for (i = 0; i < cur->n; i++) {
+        const IpRec *c = &cur->r[i];
+        ShaderConsts k;
+        float ip[4] = { 0, 1, 0, 0 };
+        unsigned char *blk;
+        if (c->type != IPR_VSH || c->cap_ok != 2) continue;
+        blk = p + (size_t)c->cb_i * IPG_DRAW_BYTES;
+        k = c->consts;
+        k.rt[3] = (float)(c->i_off / 16);
+        memcpy(blk, &k, sizeof k);
+        if (blend && c->match >= 0) {
+            const IpRec *pr = &prev->r[c->match];
+            if (pr->vsh_i == c->vsh_i && pr->b.nverts == c->b.nverts && pr->b.ninputs == c->b.ninputs
+                && pr->b.input_mask == c->b.input_mask) {
+                ip[0] = (float)(pr->i_off / 16); ip[1] = a; ip[2] = 1;
+            }
+        }
+        memcpy(blk + IPG_CONSTS_BYTES, ip, sizeof ip);
+    }
+    ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)g->cb, 0);
+    g->ok = 1;
+    return 1;
+}
+
+/* The in-between picture from the GPU copies of this frame and the last. */
+static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu *pg)
+{
+    RenderTarget *lrt = NULL; DepthTarget *ldt = NULL;
+    ID3D11PixelShader *lps = NULL; ID3D11VertexShader *lvs = NULL;
+    ID3D11ShaderResourceView *lsrv[4] = { NULL, NULL, NULL, NULL };
+    ID3D11SamplerState *lsmp[4] = { NULL, NULL, NULL, NULL };
+    ID3D11BlendState *lbs = NULL; float lbf[4] = { 0, 0, 0, 0 };
+    ID3D11DepthStencilState *ldss = NULL; UINT lsref = 0;
+    ID3D11ShaderResourceView *none[4] = { NULL, NULL, NULL, NULL };
+    UINT dbase = cur->nvc * (IPG_VC_BYTES / 16);
+    int base = 1, have = 0;
+    uint32_t i;
+    static int nodraw = -1;
+    if (nodraw < 0) { const char *e = getenv("OOGIE_INTERP_NODRAW"); nodraw = e && *e == '1'; }
+    for (i = 0; i < cur->n; i++) {
+        IpRec *c = &cur->r[i];
+        s_rp_live = &c->live;
+        if (c->type == IPR_CLEAR) {
+            be_clear(&c->s, &c->rs, c->flags, c->argb, c->zs);
+            base = 1; lrt = NULL;
+        } else if (c->type == IPR_DRAW) {
+            Nv2aBatch bb;
+            bb.vertices = (const Nv2aVertex *)(cur->d + c->v_off);
+            bb.count = c->count;
+            bb.texture = c->has_tex ? &c->tex : NULL;
+            bb.state = &c->rs;
+            s_rp_extra = c->has_x ? (const OogieVertexExtra *)(cur->d + c->x_off) : NULL;
+            be_draw(&c->s, &bb);
+            s_rp_extra = NULL;
+            base = 1; lrt = NULL;
+        } else if (c->cap_ok == 2) {
+            ID3D11VertexShader *vs = vsh_replay_shader(c->vsh_i);
+            ID3D11Buffer *cbs[4];
+            UINT first[4], num[4] = { IPG_CONSTS_BYTES / 16, IPG_VC_BYTES / 16, IPG_VC_BYTES / 16, 16 };
+            if (!vs) continue;
+            if (base) {
+                ID3D11ShaderResourceView *in[2];
+                in[0] = g->srv; in[1] = pg->srv;
+                ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
+                ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                ID3D11DeviceContext_IASetIndexBuffer(s_ctx, g->data, DXGI_FORMAT_R32_UINT, 0);
+                ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
+                ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 2, in);
+                lrt = NULL; ldt = NULL; lps = NULL; lvs = NULL; lbs = NULL; ldss = NULL;
+                memset(lsrv, 0, sizeof lsrv); memset(lsmp, 0, sizeof lsmp);
+                base = 0; have = 1;
+            }
+            if (c->rt != lrt || c->dt != ldt) {
+                D3D11_VIEWPORT vp;
+                ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, none);
+                memset(lsrv, 0, sizeof lsrv);
+                ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &c->rt->rtv, c->dt ? c->dt->dsv : NULL);
+                vp.TopLeftX = 0; vp.TopLeftY = 0;
+                vp.Width = (float)c->rt->w * c->rt->sc; vp.Height = (float)c->rt->h * c->rt->sc;
+                vp.MinDepth = 0; vp.MaxDepth = 1;
+                ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+                lrt = c->rt; ldt = c->dt;
+            }
+            if (c->ps != lps) { ID3D11DeviceContext_PSSetShader(s_ctx, c->ps, NULL, 0); lps = c->ps; }
+            if (vs != lvs) { ID3D11DeviceContext_VSSetShader(s_ctx, vs, NULL, 0); lvs = vs; }
+            if (memcmp(c->srv, lsrv, sizeof lsrv)) {
+                ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, c->srv);
+                memcpy(lsrv, c->srv, sizeof lsrv);
+            }
+            if (memcmp(c->smp, lsmp, sizeof lsmp)) {
+                ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, c->smp);
+                memcpy(lsmp, c->smp, sizeof lsmp);
+            }
+            if (c->bs != lbs || memcmp(c->bf, lbf, sizeof lbf)) {
+                ID3D11DeviceContext_OMSetBlendState(s_ctx, c->bs, c->bf, 0xFFFFFFFFu);
+                lbs = c->bs; memcpy(lbf, c->bf, sizeof lbf);
+            }
+            if (c->dss != ldss || c->sref != lsref) {
+                ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, c->dss, c->sref);
+                ldss = c->dss; lsref = c->sref;
+            }
+            first[0] = dbase + c->cb_i * (IPG_DRAW_BYTES / 16);
+            first[1] = c->vc_i * (IPG_VC_BYTES / 16);
+            first[3] = first[0] + IPG_CONSTS_BYTES / 16;
+            cbs[0] = cbs[1] = cbs[3] = g->cb;
+            /* b2: the matched draw's constants last frame (the blend block says whether to use them) */
+            if (c->match >= 0) {
+                cbs[2] = pg->cb;
+                first[2] = prev->r[c->match].vc_i * (IPG_VC_BYTES / 16);
+            } else {
+                cbs[2] = g->cb;
+                first[2] = first[1];
+            }
+            ID3D11DeviceContext1_VSSetConstantBuffers1(s_ctx1, 0, 4, cbs, first, num);
+            ID3D11DeviceContext1_PSSetConstantBuffers1(s_ctx1, 0, 1, cbs, first, num);
+            if (!nodraw)   /* test: OOGIE_INTERP_NODRAW=1 binds everything but draws nothing (GPU or CPU bound?) */
+                ID3D11DeviceContext_DrawIndexed(s_ctx, c->b.nindices, (UINT)(c->n_off / 4), 0);
+        }
+    }
+    s_rp_live = NULL;
+    if (have) {
+        ID3D11Buffer *nb[4] = { NULL, NULL, NULL, NULL };
+        ID3D11ShaderResourceView *in[2];
+        in[0] = s_ring_vin.srv; in[1] = NULL;
+        ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 4, nb);
+        ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, nb);
+        ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 2, in);
+        ID3D11DeviceContext_IASetIndexBuffer(s_ctx, NULL, DXGI_FORMAT_R32_UINT, 0);
+    }
+}
+
+static ID3D11Texture2D *s_ip_save;
+static D3D11_TEXTURE2D_DESC s_ip_sd;
+static LARGE_INTEGER s_ip_last_real;
+static uint32_t s_ip_gen;                /* flips since start (ip_flip_end) */
+static struct { uint32_t flips, shown, few, skipped; double matched; LONGLONG t_game, t_match, t_upload, t_replay, t_present, t_wait; double mb; } s_ipst;
+
+/* Show the picture halfway between the last frame and this one, then wait
+ * half a frame; the caller shows the real frame. Returns 1 if shown. */
+static int ip_wait(void)
+{
+    static int w = -1;
+    if (w < 0) { const char *e = getenv("OOGIE_INTERP_WAIT"); w = !(e && *e == '0'); }
+    return w;
+}
+
+static int ip_show_between(RenderTarget *r)
+{
+    static float (*cblend)[4]; static float *iblend; static size_t ciblend;
+    IpFrame *cur = &s_ipf[s_ipf_cur], *prev = &s_ipf[s_ipf_cur ^ 1];
+    uint32_t nc = 0, i, matched = 0;
+    int gpu, few;
+    LONGLONG up = 0;
+    IpGpu *pg;
+    D3D11_TEXTURE2D_DESC td;
+    LARGE_INTEGER freq, now;
+    const float a = 0.5f;
+
+    LARGE_INTEGER t0 = ip_now(), t1;
+    s_ipst.flips++;
+    if (s_ip_last_real.QuadPart) s_ipst.t_game += t0.QuadPart - s_ip_last_real.QuadPart;   /* the game's frame, recording included */
+    {   /* test: OOGIE_INTERP_SHOW=0 records but shows nothing (the game's frame time without the extra picture) */
+        static int show = -1;
+        if (show < 0) { const char *e = getenv("OOGIE_INTERP_SHOW"); show = !(e && *e == '0'); }
+        if (!show) { s_ipst.skipped++; return 0; }
+    }
+    s_ipst.mb += cur->dn / 1048576.0;
+    if (!cur->n || cur->bad) { s_ipst.skipped++; return 0; }
+    gpu = ipg_avail();
+    for (i = 0; i < cur->n; i++)          /* matched while recording (ipt_find) */
+        if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) { nc++; if (cur->r[i].match >= 0) matched++; }
+    if (!prev->n || prev->bad) matched = 0;
+    few = !nc || matched * 10 < nc * 8;   /* a cut or a new scene: no blending */
+    pg = &s_ipg[s_ipf_cur ^ 1];
+    if (gpu) {
+        LARGE_INTEGER tu = ip_now();
+        ipg_upload(cur, &s_ipg[s_ipf_cur], prev, a, !few && pg->ok);
+        up = ip_now().QuadPart - tu.QuadPart;
+        s_ipst.t_upload += up;
+        if (!s_ipg[s_ipf_cur].ok || !pg->ok) { s_ipst.skipped++; return 0; }
+    }
+    if (!r || r == &s_snap || !r->tex || !prev->n || prev->bad) { s_ipst.skipped++; return 0; }
+    if (few) { s_ipst.few++; return 0; }
+    s_ipst.matched += (double)matched / nc;
+    t1 = ip_now(); s_ipst.t_match += t1.QuadPart - t0.QuadPart - up; t0 = t1;   /* the upload counted on its own */
+
+    ID3D11Texture2D_GetDesc(r->tex, &td);
+    if (!s_ip_save || memcmp(&td, &s_ip_sd, sizeof td)) {
+        if (s_ip_save) ID3D11Texture2D_Release(s_ip_save);
+        s_ip_save = NULL;
+        s_ip_sd = td;
+        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ip_save))) { s_ip_save = NULL; return 0; }
+    }
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ip_save, (ID3D11Resource *)r->tex);
+    if (!cblend) cblend = (float (*)[4])malloc(sizeof(VshConsts));
+
+    s_rp_replay = 1;
+    if (gpu)
+        ipg_replay(cur, prev, &s_ipg[s_ipf_cur], pg);
+    else for (i = 0; i < cur->n; i++) {
+        IpRec *c = &cur->r[i];
+        s_rp_live = &c->live;
+        if (c->type == IPR_CLEAR) {
+            be_clear(&c->s, &c->rs, c->flags, c->argb, c->zs);
+        } else if (c->type == IPR_DRAW) {
+            Nv2aBatch bb;
+            bb.vertices = (const Nv2aVertex *)(cur->d + c->v_off);
+            bb.count = c->count;
+            bb.texture = c->has_tex ? &c->tex : NULL;
+            bb.state = &c->rs;
+            s_rp_extra = c->has_x ? (const OogieVertexExtra *)(cur->d + c->x_off) : NULL;
+            be_draw(&c->s, &bb);
+            s_rp_extra = NULL;
+        } else if (c->cap_ok == 2) {
+            OogieVshBatch b = c->b;
+            const VshConsts *vc = (const VshConsts *)(cur->d + c->vc_off);
+            b.inputs = (const float *)(cur->d + c->i_off);
+            if (c->match >= 0 && cblend) {
+                IpRec *pr = &prev->r[c->match];
+                if (pr->b.nverts == b.nverts && pr->b.ninputs == b.ninputs && pr->b.input_mask == b.input_mask) {
+                    const float *pc = (const float *)(prev->d + pr->vc_off), *cc = (const float *)vc;
+                    uint32_t k;
+                    memcpy(cblend, vc, sizeof *vc);
+                    for (k = 0; k < 192 * 4; k++) ((float *)cblend)[k] = pc[k] + (cc[k] - pc[k]) * a;
+                    vc = (const VshConsts *)cblend;
+                    if ((b.input_mask & 1) && b.ninputs) {   /* attribute 0, the position, is the first input */
+                        size_t need = (size_t)b.nverts * b.ninputs * 4;
+                        const float *pi = (const float *)(prev->d + pr->i_off), *ci = b.inputs;
+                        uint32_t v;
+                        if (need > ciblend) { free(iblend); ciblend = need + 65536; iblend = (float *)malloc(ciblend * sizeof *iblend); }
+                        if (iblend) {
+                            memcpy(iblend, ci, need * sizeof *iblend);
+                            for (v = 0; v < b.nverts; v++) {
+                                float *d = iblend + (size_t)v * b.ninputs * 4;
+                                const float *p0 = pi + (size_t)v * b.ninputs * 4;
+                                for (k = 0; k < 4; k++) d[k] = p0[k] + (d[k] - p0[k]) * a;
+                            }
+                            b.inputs = iblend;
+                        }
+                    }
+                }
+            }
+            ip_fast_draw(c, vc, b.inputs, (const uint32_t *)(cur->d + c->n_off));
+        }
+    }
+    s_rp_live = NULL;
+    s_rp_replay = 0;
+    t1 = ip_now(); s_ipst.t_replay += t1.QuadPart - t0.QuadPart; t0 = t1;
+
+    s_ip_iv = 1;
+    {   /* mode 2: these are the frames saved and captured; test: OOGIE_INTERP_SHOTS=1 saves them too, between the real ones */
+        static int shots = -1;
+        if (shots < 0) { const char *e = getenv("OOGIE_INTERP_SHOTS"); shots = e && *e == '1'; }
+        present_rt(r, ip_on() == 2 || shots, s_shown_wide);
+    }
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->tex, (ID3D11Resource *)s_ip_save);
+    s_ipst.shown++;
+    t1 = ip_now(); s_ipst.t_present += t1.QuadPart - t0.QuadPart; t0 = t1;
+    /* The real frame half a frame after this picture. Timing it from the
+     * last real frame (1.5 frames) made every frame 25 ms: the game ran at
+     * 40 fps, in slow motion (ipA/ipB). pace_flip keeps the 1/60 s grid. */
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    if (g_pc.fps_cap > 0 && ip_wait() && !s_ip_vs) {
+        LONGLONG due = now.QuadPart + freq.QuadPart / (2 * g_pc.fps_cap);
+        for (;;) {
+            QueryPerformanceCounter(&now);
+            if (now.QuadPart >= due || due - now.QuadPart > freq.QuadPart / 10) break;
+            if (due - now.QuadPart > freq.QuadPart / 500) Sleep(1);
+        }
+    }
+    s_ipst.t_wait += ip_now().QuadPart - t0.QuadPart;
+    return 1;
+}
+
+static void ip_flip_end(void)
+{
+    static DWORD t;
+    DWORD now = GetTickCount();
+    QueryPerformanceCounter(&s_ip_last_real);
+    s_ip_gen++;
+    if (!t) t = now;
+    if (now - t >= 2000) {
+        LARGE_INTEGER f;
+        double ms, n = s_ipst.flips ? (double)s_ipst.flips : 1.0;
+        QueryPerformanceFrequency(&f);
+        ms = 1000.0 / (double)f.QuadPart / n;
+        fprintf(stderr, "[INTERP] %u flips: %u in-between pictures shown, %u without (few matches), %u skipped; matched %.1f%%;"
+                        " per flip: game %.2f ms, record %.2f ms, match %.2f ms, upload %.2f ms, replay %.2f ms, present %.2f ms, wait %.2f ms, %.1f MB recorded\n",
+                s_ipst.flips, s_ipst.shown, s_ipst.few, s_ipst.skipped, s_ipst.shown ? 100.0 * s_ipst.matched / s_ipst.shown : 0.0,
+                s_ipst.t_game * ms, s_ip_t_rec * ms, s_ipst.t_match * ms, s_ipst.t_upload * ms, s_ipst.t_replay * ms, s_ipst.t_present * ms, s_ipst.t_wait * ms, s_ipst.mb / n);
+        s_ip_t_rec = 0;
+        memset(&s_ipst, 0, sizeof s_ipst);
+        t = now;
+    }
+    s_ipf_cur ^= 1;
+    {
+        IpFrame *f = &s_ipf[s_ipf_cur];
+        uint32_t i;
+        int st;
+        for (i = 0; i < f->n; i++)
+            if (f->r[i].cap_ok)
+                for (st = 0; st < 4; st++)
+                    if (f->r[i].srv[st]) ID3D11ShaderResourceView_Release(f->r[i].srv[st]);
+    }
+    s_ip_cap = -1;
+    s_ipf[s_ipf_cur].n = 0;
+    s_ipf[s_ipf_cur].dn = 0;
+    s_ipf[s_ipf_cur].nvc = 0;
+    s_ipf[s_ipf_cur].bad = 0;
+    s_ipg[s_ipf_cur].ok = 0;
+    s_ipt_gen[s_ipf_cur]++;
+}
+
 static void be_flip(void)
 {
     MSG msg;
@@ -5061,13 +6041,20 @@ static void be_flip(void)
         ptrace_frame();
     apply_config();
     if (r) {
+        int between = 0;
         s_shown_wide = wide_frame();
-        present_rt(r, 1, s_shown_wide);
+        if (ip_on())
+            between = ip_show_between(r);
+        s_ip_iv = between ? 1 : 2;        /* vsync pacing: alone, the real frame takes both refreshes */
+        if (!(ip_on() == 2 && between))
+            present_rt(r, 1, s_shown_wide);
         InterlockedIncrement(&g_oogie_presents);
         s_shown_rt = r;
         r->shown_frame = s_frame + 1;
         s_ft.shown = r->key;
     }
+    if (ip_on())
+        ip_flip_end();
     pace_flip();
     auto_scale_tick();
     tex_stats_tick();
@@ -5152,6 +6139,8 @@ static void be_flip(void)
                     s_disp[0], s_ndisp > 1 ? s_disp[1] : 0, s_ndisp > 2 ? s_disp[2] : 0, s_ndisp);
         }
     }
+    if (interp_probe_on())
+        interp_frame_end();
     s_frame++;
     {
         static DWORD t0; static uint32_t f0;
@@ -5233,7 +6222,7 @@ static void be_flip(void)
              * interval's drawing into it ("D104*134 C104 D104"), so it held
              * a clear and a few quads. Shown from the copy taken before the
              * clear, that is handled ("caught"); otherwise it is logged. */
-            if (s_shown_rt && !pc_menu_is_open() && strlen(seq[2]) + 16 < sizeof seq[2]) {   /* not a cut-off record */
+            if (!ip_on() && s_shown_rt && !pc_menu_is_open() && strlen(seq[2]) + 16 < sizeof seq[2]) {   /* not a cut-off record */
                 static unsigned n_caught, n_missed;
                 int caught = s_shown_rt == &s_snap;
                 char want[8];

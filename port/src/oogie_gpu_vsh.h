@@ -33,6 +33,10 @@ typedef struct {
     uint32_t fog_enable, fog_mode;
     float fog_param[2];
     float tscale[4][2];             /* per stage: coordinate -> 0..1 */
+    /* Where the vertices came from (high frame rate probe, d3d11_backend.c):
+     * the guest address of the first input's array (0 for inline data) and
+     * the batch's first index. */
+    uint32_t src_addr, src_first;
 } OogieVshBatch;
 
 /* The back end's entry point: returns 1 if it drew the batch, 0 to let the

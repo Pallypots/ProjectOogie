@@ -49,6 +49,10 @@ static const char s_default_ini[] =
 "; Frame-rate cap: 60 (the original speed) or 30. The game's logic, films and\n"
 "; music run per frame, so other values are not offered.\n"
 "fps_cap = 60\n"
+"; High frame rate test: 1 draws a blended picture between the game's frames\n"
+"; (120 pictures a second; the game itself stays at 60). Best on a 120 or 240 Hz\n"
+"; screen. Takes effect the next time the game starts.\n"
+"high_frame_rate = 0\n"
 "; Language of the menus and text: 1 English, 4 French, 3 German, 5 Spanish,\n"
 "; 6 Italian. Voices stay English; accented letters show as plain letters\n"
 "; (the font on the US disc has none). Takes effect at the next start.\n"
@@ -293,6 +297,7 @@ void pc_settings_load(void)
 
     to_env("Display", "window_scale", "OOGIE_WINDOW_SCALE");
     to_env("Display", "fps_cap", "OOGIE_FPS_CAP");
+    to_env("Display", "high_frame_rate", "OOGIE_INTERP");
     pc_config_load();
 }
 
@@ -450,6 +455,7 @@ void pc_config_load(void)
     if (g_pc.sharpen < 0 || g_pc.sharpen > 3) g_pc.sharpen = 1;
     g_pc.mipmaps = pc_settings_int("Graphics", "mipmaps", 1) != 0;
     g_pc.hud_edges = pc_settings_int("Display", "hud_edges", 1) != 0;
+    g_pc.high_frame_rate = pc_settings_int("Display", "high_frame_rate", 0) != 0;
     g_pc.tex_dump = pc_settings_int("Mods", "save_textures", 0) != 0;
     g_pc.ps2_hd = pc_settings_int("TexPacks", "ps2_hd", 1) != 0;
     g_pc.button_style = pc_settings_int("TexPacks", "button_prompts", 0);

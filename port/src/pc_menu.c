@@ -209,6 +209,8 @@ static Item s_items[] = {
       IT_CHOICE, &g_pc.vsync, o_onoff, 2, 1, "Display", "vsync" },
     { P_DISPLAY, "Frame Rate Cap", "Keep 60: the game, its films and music run per frame, so 30 plays everything at half speed.",
       IT_CHOICE, &g_pc.fps_cap, o_fps, 2, 60, "Display", "fps_cap" },
+    { P_DISPLAY, "High Frame Rate (Test)", "A blended picture between frames: 120 a second, the game stays at 60. Best on 120 or 240 Hz. Keep the cap at 60.",
+      IT_CHOICE, &g_pc.high_frame_rate, o_onoff, 2, 0, "Display", "high_frame_rate", NULL, 1 },
 
     { P_GRAPHICS, "Quality Preset", "Sets the five settings below at once: Low for weak laptops, Ultra for the strongest PCs.",
       IT_CHOICE, &s_preset, o_preset, 5, 3, "Graphics", "preset" },
