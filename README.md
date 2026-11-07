@@ -58,6 +58,12 @@ The translation is done with [XboxRecomp](https://github.com/sp00nznet/xboxrecom
 - **Auto-repeat held button**: hold A, B, X or Y and it presses itself about ten times a second, so button-mashing moments need only a hold.
 - Volume, mute and pause when the game is in the background.
 
+### Ways to play (from version 0.3.0)
+After **NEW GAME** and a difficulty, the game's title menu offers:
+- **Story**: the whole game in order.
+- **Chapters**: any of the 24 chapters, from the game's own Chapter Select.
+- **Boss Rush**: every major boss in a row, through to the ending.
+
 ### Quality of life
 - **In-game settings menu** (press **F1**, or Back + Start on a controller), drawn with the game's own frames, cursor and buttons. Every change applies at once and is saved.
 - **First-start setup**: point it at your disc image; it checks it and copies the game files.

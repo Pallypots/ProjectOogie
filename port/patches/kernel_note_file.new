@@ -1,0 +1,8 @@
+        } else if (ntcreate || xbox_missing_verbose()) {
+            /* Boss Rush: a fight's closing cutscene (recomp_manual.c) */
+            extern void oogie_modes_file(const char *path);
+            oogie_modes_file(gpath);
+            fprintf(stderr, "  [FILE] %s (disp %u opts 0x%X from 0x%08X) -> 0x%08X\n",
+                    gpath, (unsigned)disposition, (unsigned)options,
+                    g_xbox_kernel_caller, status);
+        }

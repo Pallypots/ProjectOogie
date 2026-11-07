@@ -1764,9 +1764,11 @@ void sub_001AD4F0(void)
  * the last 3 ms), at most OOGIE_FRAME_ORDER_MS (default 30; 0 = off).
  * Threads that sleep, load or wait inside a step are not waited for. */
 extern void sub_000586E0_gen(void);
+void oogie_modes_frame(void);
 void sub_000586E0(void)
 {
     static int cap = -2;
+    oogie_modes_frame();
     static volatile LONG n_wait, n_cap;
     if (cap == -2) { const char *e = getenv("OOGIE_FRAME_ORDER_MS"); cap = e && *e ? atoi(e) : 30; }
     /* Not under the guest CPU lock: there the drawing task cannot run while
@@ -3230,9 +3232,11 @@ void sub_000583C0_enter(void)
  * the session that asks for chapter 1 (New Game) asks for chapter N instead.
  * For the whole-game test runs; progress from earlier chapters (forms,
  * items) is not given, so later chapters may differ from a real playthrough. */
+void oogie_modes_chapter_start(void);   /* Chapters / Boss Rush, end of this file */
 void sub_00040950_enter(void)
 {
     static int target = -1, done;
+    oogie_modes_chapter_start();
     if (target < 0) {
         const char *e = getenv("OOGIE_START_CHAPTER");
         target = e && *e ? atoi(e) : 0;
@@ -3273,6 +3277,7 @@ void sub_00040950_enter(void)
  * (+8, +0xC), doors and warps call it too. OOGIE_START_SCENE=S,E replaces the
  * first booking of the session (the chapter start), so a test can begin in a
  * boss arena; OOGIE_WARP_LOG=1 logs every booking. Off by default. */
+void oogie_modes_scene_booked(int scene);
 void sub_000DDEF0_enter(void)
 {
     /* The chapter's pair is booked twice at a New Game (wp1: from 0x409AA,
@@ -3281,6 +3286,7 @@ void sub_000DDEF0_enter(void)
     static int init, n, s = -1, e = -1, log;
     static uint32_t os = 0xFFFFFFFFu, oe;
     uint32_t a = OOGIE_MEM32(g_esp + 4), b = OOGIE_MEM32(g_esp + 8);
+    oogie_modes_scene_booked((int32_t)a);
     if (!init) {
         const char *v = getenv("OOGIE_START_SCENE"), *l = getenv("OOGIE_WARP_LOG");
         init = 1;
@@ -4536,8 +4542,10 @@ void sub_0010D9E0_enter(void)
 /* Test log (OOGIE_CHEAT_LOG=1): the Mega Spider's state changes,
  * sub_000F3D10(actor, rec, new) -- expected 16 (sink), 4, 5 (reform),
  * 10 (last form), then 0 at the defeat. */
+static volatile uint32_t s_rush_actor;   /* Boss Rush test, end of this file */
 void sub_000F3D10_enter(void)
 {
+    s_rush_actor = OOGIE_MEM32(g_esp + 4);
     static int on = -1;
     uint32_t a = OOGIE_MEM32(g_esp + 4), r = OOGIE_MEM32(g_esp + 8), ty;
     float h = 0;
@@ -4596,4 +4604,691 @@ void sub_000CF810_enter(void)
     if (g_pc.cheat_health && OOGIE_MEM32(g_esp + 4) == 0x41FEC0 && OOGIE_MEM32(g_esp + 8) == 1
         && (int32_t)OOGIE_MEM32(g_esp + 12) < (int32_t)OOGIE_MEM32(0x420C28))
         OOGIE_MEM32(g_esp + 12) = OOGIE_MEM32(0x420C28);
+}
+
+/* ── Oogie: New Game modes, Chapters and Boss Rush (owner, 2026-11-06) ────
+ *
+ * Verified (text.asm): the title task sub_000791A0 runs by state [0x3E7508]:
+ * 0 the menu (sub_00078270), 4 sub_00078E70. NEW GAME sets the difficulty
+ * [0x413178] (0 Easy, 1 Normal, 2 Nightmare); after its fade the menu calls
+ * the reset sub_00077EF0 with the cursor [0x3E7530] at 0 and goes to state 4.
+ * sub_00078E70 substate [0x3E750C] 0 starts the opening film; substate 1, when
+ * the film is over, leaves the title.
+ *
+ * The mode page (below) answers before substate 0 of a New Game.
+ * - Story: nothing changes.
+ * - Chapters: the game's own all-chapters path. With [0x3E74B8] = 1 substate 1
+ *   resets, opens all 24 chapters ([0x413168] = 24), sets flags 0xF4 and 0xF5
+ *   and goes to Chapter Select. The film is skipped.
+ * - Boss Rush: each boss's chapter in turn, through the game's own chapter
+ *   clear: sub_0019D8E0 asks for chapter + 1 (call returning to 0x19DD25), and
+ *   that call is turned into the next boss. Chapter 24's clear runs the ending.
+ *
+ * Test switches: OOGIE_MODE=0/1/2 answers the page, OOGIE_NO_MODE_MENU=1
+ * means Story (test scripts), OOGIE_TEST_RUSH_FROM=N starts at boss N. */
+extern void sub_00078E70_gen(void);
+extern void sub_00078270_gen(void);
+extern void sub_000409E0_gen(void);
+extern void sub_00077EF0(void);
+extern void sub_00040A50(void);
+extern void sub_000D9AB0(void);
+extern void sub_000D9B30(void);
+extern void sub_000CF790(void);
+extern void sub_000CF810(void);
+extern void sub_00026280(void);
+
+typedef struct { int chapter; int row; int world, area, scene, entry; const char *name; const char *closing; } RushBoss;
+/* row 1: this chapter's row in the table at 0x2C5AA0 is replaced for the fight
+ * (0: the chapter's own start is the fight). closing: the chapter goes on after
+ * this fight's closing cutscene, so the first scene booked after that file is
+ * opened clears it, or its reward's item screen, or 60 s (the cutscene over and
+ * no scene booked). Verified: rb0 Shadow Oogie (won), die4 Casino Oogie (closing
+ * cutscene, then the reward). The other closing files are by the numbering: the
+ * cutscene after the fight's opening one (Hypothesis). */
+static const RushBoss s_rush[] = {
+    {  1, 1, 0, 9,  0, 0, "Shadow Oogie", "demo03.lz" },
+    {  5, 1, 1, 5,  6, 0, "Mega Spider", "demo0e.lz" },
+    {  8, 0, 0, 0,  0, 0, "Dr. Finkelstein", "demo17.lz" },
+    { 15, 0, 0, 0,  0, 0, "Lock, Shock and Barrel", NULL },
+    { 17, 0, 0, 0,  0, 0, "Casino Oogie", "demo28.lz" },
+    { 20, 0, 0, 0,  0, 0, "The Fire and Ice Kings", "demo42.lz" },
+    { 24, 0, 0, 0,  0, 0, "Oogie", NULL },
+};
+#define RUSH_N ((int)(sizeof s_rush / sizeof s_rush[0]))
+
+static int s_mode;              /* this game: 0 Story, 1 Chapters, 2 Boss Rush */
+static int s_rush_i;
+static int s_mode_answered;
+static volatile LONG s_page_choice = -1;  /* what the mode page answered */
+static volatile LONG s_mode_armed;       /* a New Game reset has just run */
+static uint32_t s_row_saved[25][4];
+static int s_row_changed[25];
+
+static void modes_restore_rows(void)
+{
+    int c, k;
+    for (c = 1; c <= 24; c++)
+        if (s_row_changed[c]) {
+            for (k = 0; k < 4; k++)
+                OOGIE_MEM32(0x2C5AA0u + (uint32_t)c * 16u + (uint32_t)k * 4u) = s_row_saved[c][k];
+            s_row_changed[c] = 0;
+        }
+}
+static void rush_set_row(const RushBoss *b)
+{
+    uint32_t row = 0x2C5AA0u + (uint32_t)b->chapter * 16u;
+    int k;
+    if (!b->row) return;
+    if (!s_row_changed[b->chapter]) {
+        for (k = 0; k < 4; k++) s_row_saved[b->chapter][k] = OOGIE_MEM32(row + (uint32_t)k * 4u);
+        s_row_changed[b->chapter] = 1;
+    }
+    OOGIE_MEM32(row) = (uint32_t)b->world;
+    OOGIE_MEM32(row + 4) = (uint32_t)b->area;
+    OOGIE_MEM32(row + 8) = (uint32_t)b->scene;
+    OOGIE_MEM32(row + 12) = (uint32_t)b->entry;
+}
+
+/* Ending a fight's chapter: what the game's own chapter end does (the event
+ * script command sub_000DA6D0: it also makes the gameplay loop exit, [0x402FE4]
+ * = 8), the results screen, after which sub_0019D8E0 asks for the next chapter. Run from the frame hook, on the game's own thread.
+ * OOGIE_TEST_RUSH_CLEAR=S (test): clears every fight after S seconds. */
+static volatile LONG s_rush_clear;
+static int s_rush_after_closing, s_rush_clearing;
+static DWORD s_rush_closing_t;
+static DWORD s_rush_t0;
+extern void sub_000408B0(void);
+extern void sub_000408C0(void);
+extern void sub_0019E810(void);
+void oogie_modes_file(const char *path)
+{
+    const char *c;
+    if (s_mode != 2 || !path) return;
+    c = s_rush[s_rush_i].closing;
+    if (c && strstr(path, c)) { s_rush_after_closing = 1; s_rush_closing_t = GetTickCount(); }
+    /* The reward's item screen follows the closing cutscene with no scene
+     * change (rb0: demo03, door room, item menu). */
+    else if (s_rush_after_closing && strstr(path, "item.stm")) {
+        s_rush_after_closing = 0;
+        InterlockedExchange(&s_rush_clear, 1);
+    }
+}
+void oogie_modes_scene_booked(int scene)
+{
+    if (s_mode == 2 && s_rush_after_closing && scene >= 0) {
+        s_rush_after_closing = 0;
+        InterlockedExchange(&s_rush_clear, 1);
+    }
+}
+/* OOGIE_TEST_BOSS_DIE=S (test): S seconds into a fight, and each second after,
+ * the game's own boss damage routine sub_000F3BF0(target, 99999.0, 1) on the
+ * last actor seen in the boss state routine sub_000F3D10(actor, rec, n), to see
+ * how each fight really ends. */
+extern void sub_000F3BF0(void);
+static void rush_test_die(void)
+{
+    static int die = -1;
+    static DWORD last;
+    DWORD now = GetTickCount();
+    uint32_t a[3];
+    float dmg = 99999.0f;
+    if (die < 0) { const char *e = getenv("OOGIE_TEST_BOSS_DIE"); die = e && *e ? atoi(e) : 0; }
+    if (die <= 0 || !s_rush_t0 || !s_rush_actor || now - s_rush_t0 < (DWORD)die * 1000u || now - last < 1000) return;
+    last = now;
+    a[0] = s_rush_actor;
+    memcpy(&a[1], &dmg, 4);
+    a[2] = 1;
+    fprintf(stderr, "[RUSH] test: damage to %08X\n", a[0]);
+    guest_stdcalln(sub_000F3BF0, 0x001064F7u, 3, a);
+}
+void oogie_modes_frame(void)
+{
+    static int test = -1;
+    uint32_t a[2];
+    if (s_mode != 2) return;
+    rush_test_die();
+    if (test < 0) { const char *e = getenv("OOGIE_TEST_RUSH_CLEAR"); test = e && *e ? atoi(e) : 0; }
+    if (test > 0 && !s_rush_clearing && s_rush_i + 1 < RUSH_N && s_rush_t0 && GetTickCount() - s_rush_t0 >= (DWORD)test * 1000u)
+        InterlockedExchange(&s_rush_clear, 1);
+    if (s_rush_after_closing && GetTickCount() - s_rush_closing_t > 60000) {
+        s_rush_after_closing = 0;
+        InterlockedExchange(&s_rush_clear, 1);
+    }
+    if (!InterlockedExchange(&s_rush_clear, 0) || s_rush_clearing) return;
+    s_rush_clearing = 1;
+    fprintf(stderr, "[RUSH] boss %d cleared: results\n", s_rush_i + 1);
+    fflush(stderr);
+    /* as sub_0019D830, but with the results screen (mode 0) */
+    OOGIE_MEM32(0x402FE4) = 8;
+    OOGIE_MEM32(0x402FE8) = 1;   /* waits for the screen; the results screen then asks for the next chapter (0x4488D) */
+    a[0] = OOGIE_MEM32(0x413164);
+    guest_stdcalln(sub_000408B0, 0x0019D84Eu, 1, a);
+    a[0] = 0;
+    guest_stdcalln(sub_000408C0, 0x0019D855u, 1, a);
+    a[0] = 2;
+    guest_stdcalln(sub_0019E810, 0x0019D865u, 1, a);
+}
+
+/* Called at the start of sub_00040950(chapter). */
+void oogie_modes_chapter_start(void)
+{
+    uint32_t ret = OOGIE_MEM32(g_esp), want = OOGIE_MEM32(g_esp + 4);
+    const RushBoss *b;
+    if (s_mode != 2) return;
+    /* The next boss: after the game's own chapter clear (0x19DD25), or after
+     * our clear, which comes back asking for the same chapter (0x19DCD8). A
+     * Continue after a death stays on this boss. */
+    if ((ret == 0x0019DD25u || (ret == 0x0019DCD8u && s_rush_clearing)) && s_rush_i + 1 < RUSH_N) s_rush_i++;
+    b = &s_rush[s_rush_i];
+    InterlockedExchange(&s_rush_clear, 0);
+    s_rush_after_closing = 0;
+    s_rush_clearing = 0;
+    s_rush_actor = 0;
+    s_rush_t0 = GetTickCount();
+    rush_set_row(b);
+    OOGIE_MEM32(g_esp + 4) = (uint32_t)b->chapter;
+    fprintf(stderr, "[RUSH] boss %d of %d: %s, chapter %d (asked for %u, from 0x%08X)\n",
+            s_rush_i + 1, RUSH_N, b->name, b->chapter, want, ret);
+    fflush(stderr);
+}
+
+/* sub_000409E0(chapter): the chapter's story flags. The forms 0xF4 and 0xF5
+ * (Hypothesis: Pumpkin King and Santa Jack, from chapters 6 and 9 as the
+ * walkthrough says) are not in its table, so the modes set them. */
+static void modes_flag(void (*fn)(void), uint32_t flag)
+{
+    guest_stdcalln(fn, 0x000409E0u, 1, &flag);
+}
+static void modes_stat(uint32_t id, uint32_t value)
+{
+    uint32_t a[3];
+    a[0] = 0x41FEC0u; a[1] = id; a[2] = value;
+    guest_stdcalln(sub_000CF810, 0x000409E0u, 3, a);
+}
+void sub_000409E0(void)
+{
+    uint32_t ch = OOGIE_MEM32(g_esp + 4);
+    sub_000409E0_gen();
+    if (s_mode == 1 && ch >= 1 && ch <= 24) {
+        modes_flag(ch >= 6 ? sub_000D9AB0 : sub_000D9B30, 0xF4);
+        modes_flag(ch >= 9 ? sub_000D9AB0 : sub_000D9B30, 0xF5);
+    } else if (s_mode == 2) {
+        uint32_t a[2], hp, k;
+        modes_flag(sub_000D9AB0, 0xF4);
+        modes_flag(sub_000D9AB0, 0xF5);
+        modes_stat(4, 2);               /* the game's own upgrade cheats, 0x1AF50 and 0x1AF70 */
+        for (k = 8; k <= 11; k++) modes_stat(k, 2);
+        guest_stdcalln(sub_00040A50, 0x000409E0u, 1, &ch);   /* the chapter's key items */
+        /* full health, as Chapter Select does (0x43C43) */
+        a[0] = 0x41FEC0u; a[1] = 0;
+        hp = guest_stdcalln(sub_000CF790, 0x000409E0u, 2, a);
+        modes_stat(1, hp);
+        a[0] = hp; a[1] = hp;
+        guest_stdcalln(sub_00026280, 0x000409E0u, 2, a);
+    }
+}
+
+void sub_00077EF0_enter(void) { InterlockedExchange(&s_mode_armed, 1); }
+
+static void modes_apply(int m)
+{
+    s_mode = m;
+    fprintf(stderr, "[MODE] %s, difficulty %u\n", m == 1 ? "Chapters" : m == 2 ? "Boss Rush" : "Story", OOGIE_MEM32(0x413178));
+    fflush(stderr);
+    if (m == 1) {
+        OOGIE_MEM32(0x3E74B8) = 1;
+        OOGIE_MEM32(0x3E750C) = 1;      /* past the film */
+    } else if (m == 2) {
+        const char *e = getenv("OOGIE_TEST_RUSH_FROM");
+        s_rush_i = e && *e ? atoi(e) : 0;
+        if (s_rush_i < 0 || s_rush_i >= RUSH_N) s_rush_i = 0;
+        OOGIE_MEM32(0x3E750C) = 1;
+    }
+}
+
+void sub_00078E70(void)
+{
+    if (OOGIE_MEM32(0x3E750C) == 0 && s_mode_armed && OOGIE_MEM32(0x3E7530) == 0 && !s_mode_answered) {
+        const char *e;
+        int r = (int)InterlockedExchange(&s_page_choice, -1);
+        if (r < 0) r = (e = getenv("OOGIE_MODE")) && *e ? atoi(e) : 0;
+        s_mode_answered = 1;
+        modes_apply(r);
+    }
+    sub_00078E70_gen();
+    if (s_mode_answered) { s_mode_answered = 0; InterlockedExchange(&s_mode_armed, 0); }
+}
+
+/* ── The mode page, part of the game's own title menu ──
+ *
+ * Verified (text.asm): the difficulty page is title substate 0x12: three
+ * sprite instances at 0x3E7864 (0x9C bytes each, copied from the template at
+ * 0x3E7558), drawn by sub_00077AA0 with sub_00017AE0(buffer, instance) and
+ * sub_00014E80(instance); selected and plain differ only by animation clip
+ * (titl0000.anb, plain 6+row, selected 0x1B+row, in 0x11+2row / 0x12+2row, out
+ * 0x22+row). The labels are pictures, rows 4-6 of the sheet tit0003.pig
+ * (title_u.stm, 512x512 DXT5).
+ *
+ * The page here is substate 0x13 (free in the game's table): the same clips and
+ * the same sounds, on three more instances that use a copy of tit0003 whose
+ * rows 4-6 say STORY, CHAPTERS, BOSS RUSH. The copy is made at run time from
+ * the player's own disc: letters are cut from the sheet's other labels; C, B
+ * and U, which no label has, are put together from G, O, D and H. Nothing of the
+ * game's art is stored in this program. */
+extern void sub_00078270_gen(void);
+extern void sub_00077AA0_gen(void);
+extern void sub_00079460(void);
+extern void sub_0004ECE0(void);
+extern void sub_0004ECF0(void);
+extern void sub_0004ED20(void);
+extern void sub_0004ED40(void);
+extern void sub_000150B0(void);
+extern void sub_00048AF0(void);
+extern void sub_0019D8A0(void);
+extern void sub_00047BF0(void);
+extern void sub_00017AE0(void);
+extern void sub_00014E80(void);
+extern void sub_000529F0(void);
+extern void sub_00084C00(void);
+extern void sub_00053820(void);
+extern void sub_00053880(void);
+extern void sub_001B9FC0(void);
+
+#define MP_W 512
+static uint32_t s_page_mem, s_page_inst, s_page_tex;
+static int s_page_row;
+
+/* DXT5 alpha only: the labels' colour is plain white. */
+static void mp_alpha_decode(const uint8_t *dds, uint8_t *a)
+{
+    int bx, by, i, j;
+    for (by = 0; by < MP_W / 4; by++)
+        for (bx = 0; bx < MP_W / 4; bx++) {
+            const uint8_t *b = dds + 128 + (size_t)(by * (MP_W / 4) + bx) * 16;
+            unsigned p[8], a0 = b[0], a1 = b[1];
+            uint64_t bits = 0;
+            p[0] = a0; p[1] = a1;
+            for (i = 0; i < 6; i++) bits |= (uint64_t)b[2 + i] << (8 * i);
+            if (a0 > a1) for (i = 1; i < 7; i++) p[i + 1] = ((7 - i) * a0 + i * a1) / 7;
+            else { for (i = 1; i < 5; i++) p[i + 1] = ((5 - i) * a0 + i * a1) / 5; p[6] = 0; p[7] = 255; }
+            for (j = 0; j < 4; j++)
+                for (i = 0; i < 4; i++)
+                    a[(by * 4 + j) * MP_W + bx * 4 + i] = (uint8_t)p[(bits >> (3 * (j * 4 + i))) & 7];
+        }
+}
+static void mp_alpha_encode(uint8_t *dds, const uint8_t *a, int v0, int v1)
+{
+    int bx, by, i, j, k;
+    for (by = v0 / 4; by < v1 / 4; by++)
+        for (bx = 0; bx < MP_W / 4; bx++) {
+            uint8_t *b = dds + 128 + (size_t)(by * (MP_W / 4) + bx) * 16;
+            unsigned lo = 255, hi = 0, p[8];
+            uint64_t bits = 0;
+            for (j = 0; j < 4; j++)
+                for (i = 0; i < 4; i++) {
+                    unsigned v = a[(by * 4 + j) * MP_W + bx * 4 + i];
+                    if (v < lo) lo = v;
+                    if (v > hi) hi = v;
+                }
+            if (hi == lo) { if (hi < 255) hi++; else lo--; }
+            p[0] = hi; p[1] = lo;
+            for (i = 1; i < 7; i++) p[i + 1] = ((7 - i) * hi + i * lo) / 7;
+            for (j = 0; j < 4; j++)
+                for (i = 0; i < 4; i++) {
+                    int v = a[(by * 4 + j) * MP_W + bx * 4 + i], best = 0, bd = 999;
+                    for (k = 0; k < 8; k++) {
+                        int d = abs(v - (int)p[k]);
+                        if (d < bd) { bd = d; best = k; }
+                    }
+                    bits |= (uint64_t)best << (3 * (j * 4 + i));
+                }
+            b[0] = (uint8_t)hi; b[1] = (uint8_t)lo;
+            for (i = 0; i < 6; i++) b[2 + i] = (uint8_t)(bits >> (8 * i));
+            /* colour block: white */
+            b[8] = 0xFF; b[9] = 0xFF; b[10] = 0xFF; b[11] = 0xFF;
+            b[12] = b[13] = b[14] = b[15] = 0;
+        }
+}
+
+/* A letter: 32 rows high, its width in *w. Source: the sheet's selected rows. */
+typedef struct { char c; short v, a, b; } MpGlyph;
+static const MpGlyph s_mp_glyph[] = {
+    { 'S', 64, 176, 188 }, { 'T', 64, 107, 122 }, { 'O', 64, 68, 86 }, { 'R', 160, 70, 85 },
+    { 'Y', 128, 103, 119 }, { 'H', 192, 119, 136 }, { 'A', 0, 146, 163 }, { 'P', 64, 89, 105 },
+    { 'E', 0, 75, 87 }, { 'D', 32, 105, 122 }, { 'G', 0, 126, 144 },
+};
+static const MpGlyph *mp_glyph(char c)
+{
+    size_t i;
+    for (i = 0; i < sizeof s_mp_glyph / sizeof s_mp_glyph[0]; i++) if (s_mp_glyph[i].c == c) return &s_mp_glyph[i];
+    return NULL;
+}
+#define MP_LW 40
+/* copy of a source letter, a column either side, optionally resized */
+static int mp_copy(const uint8_t *a, char c, uint8_t *dst, int w_to)
+{
+    const MpGlyph *g = mp_glyph(c);
+    int w = g->b - g->a + 2, x, y;
+    if (w_to <= 0) w_to = w;
+    for (y = 0; y < 32; y++)
+        for (x = 0; x < w_to; x++) {
+            float fx = (x + 0.5f) * (float)w / (float)w_to - 0.5f;
+            int x0 = (int)fx, x1 = x0 + 1 < w ? x0 + 1 : x0;
+            float t = fx - (float)x0;
+            const uint8_t *row = a + (size_t)(g->v + y) * MP_W + g->a - 1;
+            dst[y * MP_LW + x] = (uint8_t)((float)row[x0] * (1 - t) + (float)row[x1] * t + 0.5f);
+        }
+    return w_to;
+}
+static void mp_extent(const uint8_t *g, int w, int *top, int *bot)
+{
+    int y, x;
+    *top = 0; *bot = 32;
+    for (y = 0; y < 32; y++) { int any = 0; for (x = 0; x < w; x++) if (g[y * MP_LW + x] > 60) any = 1; if (any) { *top = y; break; } }
+    for (y = 31; y >= 0; y--) { int any = 0; for (x = 0; x < w; x++) if (g[y * MP_LW + x] > 60) any = 1; if (any) { *bot = y + 1; break; } }
+}
+static int mp_letter(const uint8_t *a, char c, uint8_t *out)
+{
+    uint8_t s[32 * MP_LW], o[32 * MP_LW];
+    int w, x, y, top, bot;
+    memset(out, 0, 32 * MP_LW);
+    if (c == 'C') {                 /* a G without its bar, closed with the O's lower curve */
+        w = mp_copy(a, 'G', out, 0);
+        mp_copy(a, 'O', o, w);
+        for (y = 14; y < 32; y++)
+            for (x = (int)(w * 0.62f); x < w; x++) out[y * MP_LW + x] = 0;
+        for (y = 20; y < 32; y++)
+            for (x = (int)(w * 0.5f); x < (int)(w * 0.85f); x++)
+                if (o[y * MP_LW + x] > out[y * MP_LW + x]) out[y * MP_LW + x] = o[y * MP_LW + x];
+        return w;
+    }
+    if (c == 'U') {                 /* the H's two stems over the O's lower bowl */
+        int cut;
+        w = mp_copy(a, 'H', s, 0);
+        mp_copy(a, 'O', o, w);
+        mp_extent(s, w, &top, &bot);
+        cut = top + (int)((float)(bot - top) * 0.62f);
+        for (y = 0; y < cut; y++) {
+            for (x = 0; x < 6; x++) out[y * MP_LW + x] = s[y * MP_LW + x];
+            for (x = w - 5; x < w; x++) out[y * MP_LW + x] = s[y * MP_LW + x];
+            if (y < top + 7) { out[y * MP_LW + 6] = s[y * MP_LW + 6]; out[y * MP_LW + 7] = s[y * MP_LW + 7];
+                               out[y * MP_LW + w - 7] = s[y * MP_LW + w - 7]; out[y * MP_LW + w - 6] = s[y * MP_LW + w - 6]; }
+        }
+        for (y = cut - 2; y < 32; y++)
+            for (x = 0; x < w; x++) if (o[y * MP_LW + x] > out[y * MP_LW + x]) out[y * MP_LW + x] = o[y * MP_LW + x];
+        return w;
+    }
+    if (c == 'B') {                 /* two D's stacked, the upper one narrower */
+        int ch, up_w, up_h, lo_h;
+        w = mp_copy(a, 'D', s, 0);
+        mp_extent(s, w, &top, &bot);
+        ch = bot - top;
+        up_w = (int)((float)w * 0.84f); up_h = ch / 2 + 1; lo_h = ch - ch / 2 + 1;
+        for (y = 0; y < up_h; y++)
+            for (x = 0; x < up_w; x++) {
+                int sy = top + y * ch / up_h, sx = x * w / up_w;
+                out[(top + y) * MP_LW + x] = s[sy * MP_LW + sx];
+            }
+        for (y = 0; y < lo_h; y++)
+            for (x = 0; x < w; x++) {
+                int sy = top + y * ch / lo_h, v = s[sy * MP_LW + x], dy = bot - lo_h + y;
+                if (v > out[dy * MP_LW + x]) out[dy * MP_LW + x] = (uint8_t)v;
+            }
+        return w;
+    }
+    return mp_copy(a, c, out, 0);
+}
+/* The word, centred on cx in a strip 32 rows high, in the sheet's alpha. */
+static void mp_word(uint8_t *a, const uint8_t *src, const char *word, int v, int cx)
+{
+    uint8_t l[32 * MP_LW];
+    int total = 0, i, x, y, pen;
+    for (i = 0; word[i]; i++) {
+        if (word[i] == ' ') { total += 9; continue; }
+        total += mp_letter(src, word[i], l) + 1;
+    }
+    pen = cx - total / 2;
+    for (i = 0; word[i]; i++) {
+        int w;
+        if (word[i] == ' ') { pen += 9; continue; }
+        w = mp_letter(src, word[i], l);
+        for (y = 0; y < 32; y++)
+            for (x = 0; x < w; x++)
+                if (l[y * MP_LW + x] > a[(v + y) * MP_W + pen + x]) a[(v + y) * MP_W + pen + x] = l[y * MP_LW + x];
+        pen += w + 1;
+    }
+}
+/* The dark layer behind each label: the word, spread and softened, as the
+ * sheet's own (three box blurs with some gain). dw/dh: destination strip. */
+static void mp_glow(uint8_t *a, int su, int sv, int w, int h, int du, int dv)
+{
+    float *f = (float *)calloc((size_t)(w + 16) * (size_t)(h + 16), sizeof(float));
+    float *t = (float *)calloc((size_t)(w + 16) * (size_t)(h + 16), sizeof(float));
+    int W2 = w + 16, H2 = h + 16, x, y, k, p, r = 2;
+    if (!f || !t) { free(f); free(t); return; }
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) f[(y + 8) * W2 + x + 8] = a[(sv + y) * MP_W + su + x];
+    for (p = 0; p < 3; p++) {
+        for (y = 0; y < H2; y++)
+            for (x = 0; x < W2; x++) {
+                float s = 0;
+                for (k = -r; k <= r; k++) { int xx = x + k; if (xx >= 0 && xx < W2) s += f[y * W2 + xx]; }
+                t[y * W2 + x] = s / (float)(2 * r + 1);
+            }
+        for (x = 0; x < W2; x++)
+            for (y = 0; y < H2; y++) {
+                float s = 0;
+                for (k = -r; k <= r; k++) { int yy = y + k; if (yy >= 0 && yy < H2) s += t[yy * W2 + x]; }
+                f[y * W2 + x] = s / (float)(2 * r + 1);
+            }
+    }
+    for (y = 0; y < h; y++)
+        for (x = 0; x < w; x++) {
+            float v = f[(y + 8) * W2 + x + 8] * 3.2f;
+            a[(dv + y) * MP_W + du + x] = (uint8_t)(v > 255 ? 255 : v);
+        }
+    free(f); free(t);
+}
+/* The plain (unselected) row: the selected one at 3/4 size. */
+static void mp_shrink(uint8_t *a, int su, int sv, int w, int dv)
+{
+    int dw = w * 3 / 4, x, y, du = 128 - dw / 2;   /* plain rows are centred on u 128 */
+    for (y = 0; y < 24; y++)
+        for (x = 0; x < dw; x++) {
+            float fy = (y + 0.5f) * 32 / 24 - 0.5f, fx = (x + 0.5f) * (float)w / (float)dw - 0.5f;
+            int y0 = (int)fy, x0 = (int)fx;
+            float ty = fy - (float)y0, tx = fx - (float)x0;
+            const uint8_t *r0 = a + (size_t)(sv + y0) * MP_W + su, *r1 = a + (size_t)(sv + (y0 + 1 < 32 ? y0 + 1 : y0)) * MP_W + su;
+            float top = (float)r0[x0] * (1 - tx) + (float)r0[x0 + 1 < w ? x0 + 1 : x0] * tx;
+            float bot = (float)r1[x0] * (1 - tx) + (float)r1[x0 + 1 < w ? x0 + 1 : x0] * tx;
+            a[(dv + y) * MP_W + du + x] = (uint8_t)(top * (1 - ty) + bot * ty + 0.5f);
+        }
+}
+static void mp_clear(uint8_t *a, int v0, int v1)
+{
+    memset(a + (size_t)v0 * MP_W, 0, (size_t)(v1 - v0) * MP_W);
+}
+
+/* The new sheet from the disc's title_u.stm: 0 if anything is not as expected. */
+static uint32_t mp_make_sheet(void)
+{
+    static const char *const words[3] = { "STORY", "CHAPTERS", "BOSS RUSH" };
+    FILE *f = fopen("game\\stm_data\\title_u.stm", "rb");
+    uint8_t *d = NULL, *src, *a;
+    uint32_t mem = 0, b[4];
+    long n, off = 0;
+    int i, k;
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
+    d = (uint8_t *)malloc((size_t)n);
+    if (!d || fread(d, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(d); return 0; }
+    fclose(f);
+    for (i = 0; i < 6; i++) {
+        const uint8_t *e = d + 0xC0 + i * 32;
+        if (!strncmp((const char *)e, "tit0003.pig", 11)) { memcpy(&off, e + 24, 4); break; }
+    }
+    if (!off || off + 0x40080 > n || memcmp(d + off, "DDS ", 4)) { free(d); return 0; }
+    src = (uint8_t *)malloc(MP_W * MP_W);
+    a = (uint8_t *)malloc(MP_W * MP_W);
+    if (!src || !a) { free(d); free(src); free(a); return 0; }
+    mp_alpha_decode(d + off, src);
+    memcpy(a, src, MP_W * MP_W);
+    mp_clear(a, 128, 256);
+    mp_clear(a, 352, 424);
+    for (k = 0; k < 3; k++) {
+        int sv = 128 + 32 * k, pv = 352 + 24 * k;
+        if (k < 2) {
+            mp_word(a, src, words[k], sv, 128);
+            mp_shrink(a, 0, sv, 256, pv);
+            mp_glow(a, 0, sv, 256, 32, 256, sv);
+            mp_glow(a, 0, pv, 256, 24, 256, pv);
+        } else {
+            /* the third row's selected strip is wider: text at 192, its dark layer below it */
+            mp_word(a, src, words[k], sv, 192);
+            mp_glow(a, 0, sv, 384, 32, 0, sv + 32);
+            mp_shrink(a, 64, sv, 256, pv);
+            mp_glow(a, 0, pv, 256, 24, 256, pv);
+        }
+    }
+    mp_alpha_encode(d + off, a, 128, 256);
+    mp_alpha_encode(d + off, a, 352, 424);
+    /* The loader (sub_001BA6E0) finds a texture it already has by the id at
+     * header +0x20: without an id this one is a texture of its own. */
+    memset(d + off + 0x20, 0, 4);
+    free(src); free(a);
+    b[0] = 3; b[1] = 0x40080; b[2] = 0; b[3] = 0;
+    mem = guest_stdcalln(sub_00053820, 0x00077500u, 4, b);
+    if (mem) memcpy((void *)((uintptr_t)g_xbox_mem_offset + mem), d + off, 0x40080);
+    free(d);
+    return mem;
+}
+
+static int mp_ready(void)
+{
+    uint32_t b[4], a[2];
+    int k, found = 0;
+    if (!s_page_tex) {
+        s_page_mem = mp_make_sheet();
+        if (!s_page_mem) { fprintf(stderr, "[MODE] the mode page's labels could not be made\n"); return 0; }
+        a[0] = s_page_mem; a[1] = 0;
+        s_page_tex = guest_stdcalln(sub_00084C00, 0x00077500u, 2, a);
+        b[0] = 3; b[1] = 3 * 0x9C; b[2] = 0; b[3] = 0;
+        s_page_inst = guest_stdcalln(sub_00053820, 0x00077500u, 4, b);
+        if (!s_page_tex || !s_page_inst) { fprintf(stderr, "[MODE] the mode page could not be set up\n"); return 0; }
+    }
+    for (k = 0; k < 3; k++) {
+        uint32_t p = s_page_inst + (uint32_t)k * 0x9Cu, i;
+        for (i = 0; i < 0x27; i++) OOGIE_MEM32(p + i * 4) = OOGIE_MEM32(0x3E7558u + i * 4);
+        /* the instance's texture slots (+0x40 on, sprite index at 0x15CED):
+         * the slot that holds tit0003 ([0x3E7504]) gets the new sheet */
+        for (i = 0; i < 16; i++)
+            if (OOGIE_MEM32(p + 0x40 + i * 4) == OOGIE_MEM32(0x3E7504)) { OOGIE_MEM32(p + 0x40 + i * 4) = s_page_tex; found = 1; }
+    }
+    if (!found) fprintf(stderr, "[MODE] the title's label sheet was not in its slots\n");
+    return 1;
+}
+static void mp_clip(int row, uint32_t clip)
+{
+    uint32_t a[2];
+    a[0] = s_page_inst + (uint32_t)row * 0x9Cu; a[1] = clip;
+    guest_stdcalln(sub_000150B0, 0x00078790u, 2, a);
+}
+static void mp_sound(uint32_t id)
+{
+    guest_stdcalln(sub_00048AF0, 0x00078808u, 1, &id);
+}
+/* Asked for: the page only comes up for a player, not for test scripts. */
+static int mp_wanted(void)
+{
+    static int on = -1;
+    if (on < 0) on = !(getenv("OOGIE_MODE") || getenv("OOGIE_START_CHAPTER") || getenv("OOGIE_NO_MODE_MENU"));
+    return on;
+}
+
+void sub_00078270(void)
+{
+    uint32_t sub, pressed = 0, rep = 0, z = 0, table;
+    if (s_mode || s_row_changed[1] || s_row_changed[5]) {
+        /* back on the title menu: a mode ends with its game */
+        modes_restore_rows();
+        s_mode = 0;
+        OOGIE_MEM32(0x3E74B8) = 0;
+    }
+    sub = OOGIE_MEM32(0x3E750C);
+    if ((sub != 0x12 && sub != 0x13) || !mp_wanted()
+        || (OOGIE_MEM32(0x3E7550) && guest_stdcalln(sub_00079460, 0x00078290u, 0, NULL))) {
+        sub_00078270_gen();
+        return;
+    }
+    /* as the menu reads the pad (0x782B8) */
+    pressed = guest_stdcalln(sub_0004ECE0, 0x000782C4u, 1, &z) | guest_stdcalln(sub_0004ED20, 0x000782DBu, 1, &z);
+    rep = guest_stdcalln(sub_0004ECF0, 0x000782CDu, 1, &z) | guest_stdcalln(sub_0004ED40, 0x000782E2u, 1, &z);
+    table = OOGIE_MEM32(0x2C4AE8);
+    if (sub == 0x12) {
+        /* confirm on the difficulty page opens this page instead of the fade */
+        if (!(rep & 0x5000u) && !(pressed & OOGIE_MEM32(table + 4))
+            && (pressed & (OOGIE_MEM32(table) + 0x800u)) && mp_ready()) {
+            s_page_row = 0;
+            mp_clip(0, 0x1B); mp_clip(1, 7); mp_clip(2, 8);
+            OOGIE_MEM32(0x3E750C) = 0x13;
+            mp_sound(1);
+            g_esp += 4;
+            return;
+        }
+        sub_00078270_gen();
+        return;
+    }
+    if (rep & 0x5000u) {                /* up / down, wrapping, as the difficulty page */
+        int up = (rep & 0x1000u) != 0;
+        mp_clip(s_page_row, 0x22u + (uint32_t)s_page_row);
+        s_page_row = up ? (s_page_row ? s_page_row - 1 : 2) : (s_page_row < 2 ? s_page_row + 1 : 0);
+        mp_clip(s_page_row, (up ? 0x12u : 0x11u) + 2u * (uint32_t)s_page_row);
+        mp_sound(0);
+    } else if (pressed & OOGIE_MEM32(table + 4)) {    /* back to the difficulty page */
+        OOGIE_MEM32(0x3E750C) = 0x12;
+        mp_sound(2);
+    } else if (pressed & (OOGIE_MEM32(table) + 0x800u)) {   /* as 0x78875 */
+        uint32_t a;
+        s_page_choice = s_page_row;
+        a = 0; guest_stdcalln(sub_0019D8A0, 0x0007887Bu, 1, &a);
+        OOGIE_MEM32(0x3E750C) = 0x20;
+        OOGIE_MEM32(0x3E7518) = 4;
+        OOGIE_MEM32(0x3E751C) = 0;
+        OOGIE_MEM32(0x3E7520) = 0;
+        OOGIE_MEM32(0x3E7524) = 0;
+        a = 0x3E8; guest_stdcalln(sub_00047BF0, 0x000788ABu, 1, &a);
+        a = 0x3C3; OOGIE_MEM32(0x3E7554) = guest_stdcalln(sub_00048AF0, 0x000788B5u, 1, &a);
+        mp_sound(1);
+    }
+    g_esp += 4;
+}
+
+/* eax is the display buffer, in and out. */
+void sub_00077AA0(void)
+{
+    sub_00077AA0_gen();
+    if (OOGIE_MEM32(0x3E7508) == 0 && OOGIE_MEM32(0x3E750C) == 0x13 && s_page_inst) {
+        uint32_t buf = g_eax, lang = guest_stdcalln(sub_000529F0, 0x00077BE1u, 0, NULL), a[2];
+        int k;
+        for (k = 0; k < 3; k++) {
+            uint32_t p = s_page_inst + (uint32_t)k * 0x9Cu;
+            float y = lang <= 2 ? 112.0f + 26.0f * (float)k : lang == 3 ? 98.0f + 29.0f * (float)k
+                    : lang <= 5 ? 99.0f + 29.0f * (float)k : 85.0f + 31.0f * (float)k;
+            float x0 = 0;
+            memcpy((void *)((uintptr_t)g_xbox_mem_offset + p), &x0, 4);
+            memcpy((void *)((uintptr_t)g_xbox_mem_offset + p + 4), &y, 4);
+            a[0] = buf; a[1] = p;
+            buf = guest_stdcalln(sub_00017AE0, 0x00077C4Eu, 2, a);
+            guest_stdcalln(sub_00014E80, 0x00077C56u, 1, &p);
+        }
+        g_eax = buf;
+    }
+}
+
+/* The title's own clean-up: the sheet goes with its other textures. */
+void sub_00077410_enter(void)
+{
+    if (s_page_tex) guest_stdcalln(sub_001B9FC0, 0x0007742Du, 1, &s_page_tex);
+    if (s_page_mem) guest_stdcalln(sub_00053880, 0x0007742Du, 1, &s_page_mem);
+    if (s_page_inst) guest_stdcalln(sub_00053880, 0x0007742Du, 1, &s_page_inst);
+    s_page_tex = s_page_mem = s_page_inst = 0;
 }

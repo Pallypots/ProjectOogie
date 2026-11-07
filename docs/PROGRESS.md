@@ -398,3 +398,8 @@ See docs/IMPROVEMENT_PLAN.md.
 - New: Chapter 24 from -World "9,2,42,0" reaches the final dance, and a script can win it and run to the totals screen. scripts/chapter_frames.ps1 -StopPressOn.
 - Result: real route rel_end clean, whole-game sweep rel029 clean. Open: Oogie's first phase and the Steam Deck not tested here; the player to confirm.
 - Prototype kept out of the release as before; files restored to the working copy afterwards. Release notes: docs/RELEASE_NOTES_0.2.9.md.
+
+## 2026-11-07: Chapters and Boss Rush (owner request, not released)
+- The owner asked for a Chapter Select choice and a Boss Rush. A first version used the F1 style overlay and an F1 Extras page; the owner rejected it, it must be part of the game's own menu. Both were removed.
+- Now a real page of the title menu after the difficulty: STORY, CHAPTERS, BOSS RUSH (KNOWN_ISSUES #101). Nothing committed. Open: the owner's own try, real wins in the five untested fights, the unused fourth main menu row ("INFORMATION") if an Extras entry is wanted.
+- 0.3.0 released 2026-11-07 on the owner's word, with the announcement on the release page (Discussions are off) and a reply on #13.

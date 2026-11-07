@@ -8,6 +8,7 @@
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Cap = 60,
       [string]$Marker = "rsd_3mhd\.lz", [int]$TimeoutSec = 300, [switch]$Keep,
       [string]$LevelFile = "0000\.lz",
+      [switch]$NoFilm,      # OOGIE_MODE 1 or 2: no opening film after the difficulty, return with the game running
       [switch]$LoadFirst)   # open the LOAD GAME screen and back out before NEW GAME (its art, sbuty_u.stm, loaded first)   # the level file the chapter loads (OOGIE_START_CHAPTER: another one)
 $Root = Split-Path -Parent $PSScriptRoot
 $log = Join-Path $Root "logs\$Name.err.log"
@@ -72,6 +73,7 @@ for ($i = 0; $i -lt 12; $i++) {
 P "a:300" 4          # NEW GAME -> difficulty
 P "up:300" 2         # NORMAL -> EASY
 P "a:300" 1          # start
+if ($NoFilm) { return }
 $null = WaitFor "mv_04\.bik" 8
 $t1 = Get-Date
 do { P "a:300" 0 } while (-not (WaitFor "mv_04\.bik" 5) -and ((Get-Date) - $t1).TotalSeconds -lt 45)

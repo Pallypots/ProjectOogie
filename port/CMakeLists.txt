@@ -121,6 +121,7 @@ oogie_patch_source(xbox_kernel "${XBOXRECOMP_DIR}/src/kernel" nv2a_pb_exec.c
                    backend_reg_read)    # #97: SET_ZMIN_MAX_CONTROL for near/far clipping
 # The two-second kernel call summary, off under OOGIE_QUIET_GPU (frame hitches).
 oogie_patch_source(xbox_kernel "${XBOXRECOMP_DIR}/src/kernel" kernel_bridge.c
+                   kernel_note_file     # Boss Rush: a fight's closing cutscene
                    kernel_summary_quiet kernel_read_quiet   # no [READ] line per disc read unless OOGIE_READ_LOG=1
                    ke_wait_d3d_gpu      # #58: D3D's GPU-far-behind wait spun forever (figure viewer hang)
                    guest_cpu_held       # lets port code release the guest CPU lock while it waits

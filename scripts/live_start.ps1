@@ -33,6 +33,7 @@ $env:RECOMP_SAVE_DIR = if ($env:OOGIE_TEST_SAVES) { $env:OOGIE_TEST_SAVES } else
 # the owner's settings.ini edits never change what a test presses.
 $env:OOGIE_SETTINGS = if ($env:OOGIE_TEST_SETTINGS) { $env:OOGIE_TEST_SETTINGS } else { Join-Path $Root "logs\settings_test.ini" }   # OOGIE_TEST_SETTINGS: e.g. a copy of the owner's settings
 $env:RECOMP_PAD_LIVE = $pad
+if (-not $env:OOGIE_MODE -and -not $env:OOGIE_SHOW_MODE_MENU) { $env:OOGIE_NO_MODE_MENU = "1" } else { Remove-Item Env:OOGIE_NO_MODE_MENU -ErrorAction SilentlyContinue }  # test scripts: no mode screen unless a mode is asked for
 $env:RECOMP_PB_REPORT_MS = "$ReportMs"
 Remove-Item Env:RECOMP_WATCHDOG_SECS -ErrorAction SilentlyContinue
 if ($D3D) {

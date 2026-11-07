@@ -4,7 +4,8 @@
 #   powershell -File scripts\chapter_frames.ps1 -Chapter 20 -Name cf20 [-Seconds 120] [-Every 3] [-World "6,0,0,0"]
 # Frames: logs\<Name>\t<sec>.png. Stops the game it started.
 param([int]$Chapter = 20, [string]$Name = "cf", [int]$Seconds = 120, [double]$Every = 3,
-      [string]$World = "", [string]$Settings = "logs\settings_cheats.ini", [string]$Press = "", [int]$ProbeAt = 0, [string]$LevelFile = "stm_data\\\d{4}\.lz", [string]$StopPressOn = "")
+      [string]$World = "", [string]$Settings = "logs\settings_cheats.ini", [string]$Press = "", [int]$ProbeAt = 0, [string]$LevelFile = "stm_data\\\d{4}\.lz", [string]$StopPressOn = "", [string]$Mode = "", [string]$RushFrom = "")
+# -Mode 1 or 2: New Game in Chapters or Boss Rush mode (-Chapter is ignored); -RushFrom N: start at boss N
 # -StopPressOn: no more presses once this appears in the log (so a film is not skipped)
 # -LevelFile: the log pattern that means the level has loaded (chapter 9 loads no stm_data\NNNN.lz; use "jack\.lz")
 $probed = $false
@@ -13,12 +14,26 @@ $Root = Split-Path -Parent $PSScriptRoot
 if (Get-Process oogie_recomp -ErrorAction SilentlyContinue) { "a game is already running; not starting"; exit 1 }
 $env:OOGIE_TEST_SETTINGS = (Resolve-Path (Join-Path $Root $Settings)).Path
 if ($World) { $env:OOGIE_START_WORLD = $World; $env:OOGIE_WARP_LOG = "1" }
+if ($Mode) {
+    $env:OOGIE_MODE = $Mode
+    if ($RushFrom) { $env:OOGIE_TEST_RUSH_FROM = $RushFrom }
+    # The menu presses sometimes land on LOAD GAME: try again until the log says the mode began.
+    for ($try = 0; $try -lt 4; $try++) {
+        & (Join-Path $PSScriptRoot "timing_cutscene.ps1") -Name $Name -Cap 60 -Keep -NoFilm | Out-Null
+        Start-Sleep -Seconds 6
+        if (Select-String -Path (Join-Path $Root "logs\$Name.err.log") -Pattern '\[MODE\]' -Quiet) { break }
+        & (Join-Path $PSScriptRoot "stop_test_game.ps1"); Start-Sleep -Seconds 2
+    }
+    $env:OOGIE_MODE = $null; $env:OOGIE_TEST_RUSH_FROM = $null
+} else {
 if ($Chapter -ge 2) { $env:OOGIE_START_CHAPTER = "$Chapter" }
 & (Join-Path $PSScriptRoot "timing_cutscene.ps1") -Name $Name -Cap 60 -Keep -TimeoutSec 5 -LevelFile $LevelFile -Marker "no_marker_xyz" | Out-Null
+}
 $env:OOGIE_START_CHAPTER = $null; $env:OOGIE_START_WORLD = $null; $env:OOGIE_WARP_LOG = $null
 $p = Get-Process oogie_recomp -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $p) { "game not running"; exit 1 }
 $out = Join-Path $Root "logs\$Name"; New-Item -ItemType Directory -Force $out | Out-Null
+Get-ChildItem $out -Filter "t*.png" -ErrorAction SilentlyContinue | Remove-Item   # no frames from an earlier run
 Add-Type -AssemblyName System.Drawing
 $live = Join-Path $Root "logs\live"
 $t0 = Get-Date; $n = 0
