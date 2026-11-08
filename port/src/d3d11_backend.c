@@ -3470,6 +3470,8 @@ typedef struct {
     int has_tex; Nv2aTexture tex;
     OogieVshBatch b; size_t i_off, n_off, vc_off;   /* inputs, indices, the VshConsts it drew with */
     uint64_t key; int32_t match, next_same;         /* next_same: this frame's next draw of the same name */
+    uint32_t taken;                                 /* claimed by a draw of the next frame (s_ip_gen + 1) */
+    int syn; size_t syn_off;                        /* inline run moved whole: its own positions shifted back, at syn_off (ip_regroup) */
     int vsh_i; uint32_t vc_i, cb_i;                 /* program, constants set, draw block (GPU replay) */
     /* What the live draw bound (prep_draw, be_draw_vsh): the replay binds
      * these again instead of preparing the draw a second time (ipF: that
@@ -4277,7 +4279,7 @@ static char *vsh_generate(const OogieVshBatch *b)
     for (i = 0; i < 16; i++) {
         if (s_vsh_replay && i == 0 && (b->input_mask & 1u)) {
             sadd(&s, "  float4 v0 = VIN[(uint)rt.w + vid * %u];\n"
-                     "  if (ipp.z > 0) v0 = lerp(PVIN[(uint)ipp.x + vid * %u], v0, ipa.x);\n", b->ninputs, b->ninputs);
+                     "  if (ipp.z > 0) { float4 pv0 = ipp.w > 0 ? VIN[(uint)ipp.x + vid * %u] : PVIN[(uint)ipp.x + vid * %u]; v0 = lerp(pv0, v0, ipa.x); }\n", b->ninputs, b->ninputs, b->ninputs);
             k++;
         } else if (b->input_mask & (1u << i))
             sadd(&s, "  float4 v%u = VIN[(uint)rt.w + vid * %u + %u];\n", i, b->ninputs, k++);
@@ -4675,6 +4677,107 @@ static void interp_frame_end(void)
     s_ip_n2d = 0;
 }
 
+/* Owner's test 2 (2026-11-08, 165 Hz desktop): see-through walls, black
+ * streaks from Jack to the floor, only while moving. The game draws one model
+ * several times a frame with the same name (shader, texture, vertex address,
+ * count): Jack and his shadow, repeated wall and fence pieces. Taking them in
+ * draw order paired the wrong copies whenever the game drew them in another
+ * order (it sorts by distance to the camera), and the in-between picture put
+ * each copy half way to another one. Now each draw takes, among the unclaimed
+ * draws of its name in the frame before, the one whose constants (its
+ * matrices) are closest. */
+static uint32_t s_ip_gen;                /* flips since start (ip_flip_end) */
+static struct { uint32_t dup, reorder, far_; } s_ippick;
+static float ip_cdist(const float *a, const float *b, float stop)
+{
+    float d = 0.0f;
+    int i;
+    for (i = 0; i < 192 * 4; i += 4) {
+        d += fabsf(a[i] - b[i]) + fabsf(a[i + 1] - b[i + 1]) + fabsf(a[i + 2] - b[i + 2]) + fabsf(a[i + 3] - b[i + 3]);
+        if (d >= stop) return d;
+    }
+    return d;
+}
+/* Inline draws (vertex data written by the CPU each frame, no vertex address)
+ * have no identity but their place. Test 2's flicker (kd4, chapter 1): the
+ * shadows are ~560 such quads a frame (4 vertices, position only), each drawn
+ * three times (stencil mark, shade, unmark), 5-15 quads a shadow. Pairing them
+ * by count shifted every later quad as soon as a shadow had one quad more or
+ * less than the frame before; the three passes then blended to different
+ * places and left stencil behind: pale bands, black streaks down from Jack,
+ * shade smeared over walls. They are now paired by position (sampled
+ * vertices), and a quad with no partner within its own size is drawn where
+ * this frame has it, unblended (all three passes alike: same data, same
+ * choice). */
+static float ip_pdist(const IpFrame *fa, const IpRec *a, const IpFrame *fb, const IpRec *b, float stop)
+{
+    const float *pa = (const float *)(fa->d + a->i_off), *pb = (const float *)(fb->d + b->i_off);
+    uint32_t n = a->b.nverts, st = a->b.ninputs * 4, s, v;
+    float d = 0.0f;
+    for (s = 0; s < 8 && s < n; s++) {
+        v = n > 8 ? (uint32_t)((uint64_t)s * (n - 1) / 7) : s;
+        d += fabsf(pa[v * st] - pb[v * st]) + fabsf(pa[v * st + 1] - pb[v * st + 1]) + fabsf(pa[v * st + 2] - pb[v * st + 2]);
+        if (d >= stop) return d;
+    }
+    return d;
+}
+static int32_t ip_pick(IpSlot *pe, const IpFrame *f, const IpRec *c)
+{
+    IpFrame *pf = &s_ipf[s_ipf_cur ^ 1];
+    uint32_t stamp = s_ip_gen + 1;
+    int32_t j, cand[128], best = -1;
+    int n = 0, k, lim, byplace;
+    float bd = 3.0e38f;
+    byplace = c->b.src_addr == 0 && (c->b.input_mask & 1) && c->b.ninputs && c->b.nverts;
+    if (byplace) {   /* inline draws are paired again as whole runs at the flip (ip_regroup) unless OOGIE_INTERP_RUNS=0 */
+        static int runs = -1;
+        if (runs < 0) { const char *e = getenv("OOGIE_INTERP_RUNS"); runs = !(e && *e == '0'); }
+        if (runs) byplace = -1;
+    }
+    lim = byplace > 0 ? 128 : byplace < 0 ? 1 : 48;
+    if (byplace < 0) byplace = 0;
+    while (pe->cursor >= 0 && pf->r[pe->cursor].taken == stamp) pe->cursor = pf->r[pe->cursor].next_same;
+    for (j = pe->cursor; j >= 0 && n < lim; j = pf->r[j].next_same)
+        if (pf->r[j].taken != stamp) cand[n++] = j;
+    if (!n) return -1;
+    {   /* test: OOGIE_INTERP_ORDER=1 pairs in draw order, as test 2 did */
+        static int order = -1;
+        if (order < 0) { const char *e = getenv("OOGIE_INTERP_ORDER"); order = e && *e == '1'; }
+        if (order) { n = 1; byplace = 0; }
+    }
+    if (byplace) {
+        const float *p = (const float *)(f->d + c->i_off);
+        uint32_t nv = c->b.nverts, st = c->b.ninputs * 4, s, v, ns = nv < 8 ? nv : 8;
+        float lo[3] = { 3e38f, 3e38f, 3e38f }, hi[3] = { -3e38f, -3e38f, -3e38f }, ext;
+        int a;
+        for (s = 0; s < ns; s++) {
+            v = nv > 8 ? (uint32_t)((uint64_t)s * (nv - 1) / 7) : s;
+            for (a = 0; a < 3; a++) { float x = p[v * st + a]; if (x < lo[a]) lo[a] = x; if (x > hi[a]) hi[a] = x; }
+        }
+        ext = (hi[0] - lo[0]) + (hi[1] - lo[1]) + (hi[2] - lo[2]);
+        if (!(ext == ext) || ext > 1e30f) ext = 0.0f;
+        for (k = 0; k < n; k++) {
+            float d = ip_pdist(f, c, pf, &pf->r[cand[k]], bd);
+            if (d < bd) { bd = d; best = cand[k]; if (d == 0.0f) break; }
+        }
+        if (n > 1) { s_ippick.dup++; if (best != cand[0]) s_ippick.reorder++; }
+        if (!(bd / (float)ns <= ext)) { s_ippick.far_++; return -1; }   /* no partner near it: drawn unblended, nothing claimed */
+    } else if (n == 1) best = cand[0];
+    else {
+        const float *cc = (const float *)(f->d + c->vc_off);
+        s_ippick.dup++;
+        for (k = 0; k < n; k++) {
+            const IpRec *pr = &pf->r[cand[k]];
+            float d = ip_cdist(cc, (const float *)(pf->d + pr->vc_off), bd);
+            if (d < bd) { bd = d; best = cand[k]; if (d == 0.0f) break; }
+        }
+        if (best != cand[0]) s_ippick.reorder++;
+    }
+    pf->r[best].taken = stamp;
+    while (pe->cursor >= 0 && pf->r[pe->cursor].taken == stamp) pe->cursor = pf->r[pe->cursor].next_same;
+    return best;
+}
+
 /* be_draw_vsh, just before the draw: the shader, the constants as uploaded,
  * and the record's name (shader, texture, vertex address, first index,
  * count: probe ip2 found 99.8-100% again in the next frame). */
@@ -4715,10 +4818,8 @@ static void ip_cap_finish(ID3D11VertexShader *vs, const Nv2aTexture *tex0, const
             if (e->tail >= 0) f->r[e->tail].next_same = ci; else e->head = e->cursor = ci;
             e->tail = ci;
         }
-        if (pe && pe->cursor >= 0) {
-            c->match = pe->cursor;
-            pe->cursor = s_ipf[s_ipf_cur ^ 1].r[pe->cursor].next_same;
-        }
+        if (pe && pe->cursor >= 0)
+            c->match = ip_pick(pe, f, c);
     }
 }
 
@@ -5751,6 +5852,12 @@ static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int 
             DeleteFileA("logs\\ipdump.flag");
             left = 2;
         }
+        {   /* also once with the first picture burst (logs\flipdump.flag, scripts\ip_test.ps1 -Shots) */
+            static int fd_done;
+            if (on && !left && blend && !fd_done && cur->n > 500 && GetFileAttributesA("logs\\flipdump.flag") != INVALID_FILE_ATTRIBUTES) {
+                fd_done = 1; left = 2;
+            }
+        }
         dump = left > 0;
         if (dump) { left--; fprintf(stderr, "[IPDUMP] upload %ld: %u records\n", cnt, cur->n); }
     }
@@ -5781,7 +5888,9 @@ static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int 
         k = c->consts;
         k.rt[3] = (float)(c->i_off / 16);
         memcpy(blk, &k, sizeof k);
-        if (blend && c->match >= 0) {
+        if (blend && c->syn && c->match >= 0) {
+            ip[0] = (float)(c->syn_off / 16); ip[1] = 1; ip[2] = 1; ip[3] = 1;   /* positions from this frame's block (t8) */
+        } else if (blend && c->match >= 0) {
             const IpRec *pr = &prev->r[c->match];
             if (pr->vsh_i == c->vsh_i && pr->b.nverts == c->b.nverts && pr->b.ninputs == c->b.ninputs
                 && pr->b.input_mask == c->b.input_mask && ip_pair_ok(cur, c, prev, pr)) {
@@ -5799,6 +5908,18 @@ static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int 
                     s->stencil_enable, s->stencil_func, s->stencil_ref, s->stencil_fail, s->stencil_zfail, s->stencil_zpass,
                     s->blend_enable, s->blend_src, s->blend_dst, s->color_mask,
                     c->has_tex ? c->tex.offset : 0, c->rt ? c->rt->key : 0, (void *)c->rst);
+            if ((c->b.input_mask & 1) && c->b.ninputs && c->b.nverts) {   /* first and last vertex, and the partner's */
+                const float *q = (const float *)(cur->d + c->i_off);
+                size_t L = (size_t)(c->b.nverts - 1) * c->b.ninputs * 4;
+                fprintf(stderr, "[IPDUMP]   pos %.3f %.3f %.3f / %.3f %.3f %.3f", q[0], q[1], q[2], q[L], q[L + 1], q[L + 2]);
+                if (c->match >= 0) {
+                    const IpRec *pr2 = &prev->r[c->match];
+                    const float *w = (const float *)(prev->d + pr2->i_off);
+                    size_t L2 = (size_t)(pr2->b.nverts ? pr2->b.nverts - 1 : 0) * pr2->b.ninputs * 4;
+                    fprintf(stderr, " was %.3f %.3f %.3f / %.3f %.3f %.3f", w[0], w[1], w[2], w[L2], w[L2 + 1], w[L2 + 2]);
+                }
+                fprintf(stderr, "\n");
+            }
         }
         s_ipguard_why = 0;
     }
@@ -5933,10 +6054,7 @@ static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu 
     }
 }
 
-static ID3D11Texture2D *s_ip_save;
-static D3D11_TEXTURE2D_DESC s_ip_sd;
 static LARGE_INTEGER s_ip_last_real;
-static uint32_t s_ip_gen;                /* flips since start (ip_flip_end) */
 static struct { uint32_t flips, shown, few, skipped, pics, tried; double matched; LONGLONG t_game, t_match, t_upload, t_replay, t_present, t_wait; double mb; } s_ipst;
 
 /* Pictures a second the player asked for (Frame Rate, 0 unlimited), held to
@@ -5978,8 +6096,8 @@ static void ip_replay_at(IpFrame *cur, IpFrame *prev, IpGpu *pg, int gpu, float 
             b.inputs = (const float *)(cur->d + c->i_off);
             if (c->match >= 0 && cblend) {
                 IpRec *pr = &prev->r[c->match];
-                if (pr->b.nverts == b.nverts && pr->b.ninputs == b.ninputs && pr->b.input_mask == b.input_mask
-                    && ip_pair_ok(cur, c, prev, pr)) {
+                if (c->syn || (pr->b.nverts == b.nverts && pr->b.ninputs == b.ninputs && pr->b.input_mask == b.input_mask
+                    && ip_pair_ok(cur, c, prev, pr))) {
                     const float *pc = (const float *)(prev->d + pr->vc_off), *cc = (const float *)vc;
                     uint32_t k;
                     memcpy(cblend, vc, sizeof *vc);
@@ -5987,7 +6105,7 @@ static void ip_replay_at(IpFrame *cur, IpFrame *prev, IpGpu *pg, int gpu, float 
                     vc = (const VshConsts *)cblend;
                     if ((b.input_mask & 1) && b.ninputs) {   /* attribute 0, the position, is the first input */
                         size_t need = (size_t)b.nverts * b.ninputs * 4;
-                        const float *pi = (const float *)(prev->d + pr->i_off), *ci = b.inputs;
+                        const float *pi = c->syn ? (const float *)(cur->d + c->syn_off) : (const float *)(prev->d + pr->i_off), *ci = b.inputs;
                         uint32_t v;
                         if (need > ciblend) { free(iblend); ciblend = need + 65536; iblend = (float *)malloc(ciblend * sizeof *iblend); }
                         if (iblend) {
@@ -6007,6 +6125,338 @@ static void ip_replay_at(IpFrame *cur, IpFrame *prev, IpGpu *pg, int gpu, float 
     }
     s_rp_live = NULL;
     s_rp_replay = 0;
+}
+
+/* Inline draws again, as groups (kb0: pairing quad by quad by place still left
+ * a pale wedge at a=0). A shadow here is a closed volume of 5-15 quads; one
+ * quad out of step with the others breaks the stencil count along a long thin
+ * wedge. So the quads are taken as runs (consecutive draws of one name and one
+ * stencil/colour/cull state: one pass of one shadow), and a run blends only with
+ * a run of the frame before with the same state and the same number of quads,
+ * near it, quad by quad in order (the game builds a volume's quads in the same
+ * order each frame). Any other run is drawn as this frame has it, all its quads
+ * alike. Runs of the frame before are looked for among the 24 either side of
+ * the same place in the order of their state (shadows come in the same order). */
+typedef struct { uint32_t start, len, ord; uint64_t sig; float ext, cen[3]; int taken; } IpRun;
+static IpRun *s_iprun[2]; static uint32_t s_iprun_n[2], s_iprun_cap[2];
+static struct { uint32_t runs, blended, refused, quads_refused, rotated, no_twin, far_run, far_quad, rematched, unmatched; } s_ipgrp;
+static int ip_inline(const IpRec *c)
+{
+    return c->type == IPR_VSH && c->cap_ok == 2 && c->b.src_addr == 0 && (c->b.input_mask & 1)
+           && c->b.ninputs && c->b.nverts;
+}
+static uint64_t ip_run_sig(const IpRec *c)
+{
+    const Nv2aRenderState *r = &c->rs;
+    uint32_t v[11];
+    v[0] = r->stencil_enable; v[1] = r->stencil_func; v[2] = r->stencil_ref; v[3] = r->stencil_fail;
+    v[4] = r->stencil_zfail; v[5] = r->stencil_zpass; v[6] = r->color_mask; v[7] = r->cull_enable;
+    v[8] = r->cull_face; v[9] = r->blend_enable; v[10] = r->depth_func;
+    return ip_hash(c->key ^ 0x9E3779B97F4A7C15ull, v, sizeof v);
+}
+static int ip_run_cmp(const void *a, const void *b)
+{
+    const IpRun *x = (const IpRun *)a, *y = (const IpRun *)b;
+    if (x->sig != y->sig) return x->sig < y->sig ? -1 : 1;
+    return x->ord < y->ord ? -1 : x->ord > y->ord;
+}
+static uint32_t ip_runs(int fi, const IpFrame *f)
+{
+    uint32_t i = 0, n = 0;
+    while (i < f->n) {
+        const IpRec *c = &f->r[i];
+        uint32_t j;
+        uint64_t sig;
+        if (!ip_inline(c)) { i++; continue; }
+        sig = ip_run_sig(c);
+        for (j = i + 1; j < f->n && ip_inline(&f->r[j]) && f->r[j].key == c->key && ip_run_sig(&f->r[j]) == sig; j++) ;
+        if (n == s_iprun_cap[fi]) {
+            uint32_t cap = s_iprun_cap[fi] ? s_iprun_cap[fi] * 2 : 1024;
+            IpRun *nr = (IpRun *)realloc(s_iprun[fi], cap * sizeof *nr);
+            if (!nr) break;
+            s_iprun[fi] = nr; s_iprun_cap[fi] = cap;
+        }
+        {
+            IpRun *r = &s_iprun[fi][n++];
+            float lo[3] = { 3e38f, 3e38f, 3e38f }, hi[3] = { -3e38f, -3e38f, -3e38f };
+            double sum[3] = { 0, 0, 0 }; uint32_t cnt = 0;
+            uint32_t q, v, a;
+            r->start = i; r->len = j - i; r->sig = sig; r->taken = 0; r->ord = 0;
+            for (q = i; q < j; q++) {
+                const IpRec *d = &f->r[q];
+                const float *pp = (const float *)(f->d + d->i_off);
+                for (v = 0; v < d->b.nverts && v < 8; v++) {
+                    for (a = 0; a < 3; a++) {
+                        float x = pp[(size_t)v * d->b.ninputs * 4 + a];
+                        if (x < lo[a]) lo[a] = x;
+                        if (x > hi[a]) hi[a] = x;
+                        sum[a] += x;
+                    }
+                    cnt++;
+                }
+            }
+            for (a = 0; a < 3; a++) r->cen[a] = cnt ? (float)(sum[a] / cnt) : 0.0f;
+            r->ext = (hi[0] - lo[0]) + (hi[1] - lo[1]) + (hi[2] - lo[2]);
+            if (!(r->ext == r->ext) || r->ext > 1e30f) r->ext = 0.0f;
+        }
+        i = j;
+    }
+    s_iprun_n[fi] = n;
+    return n;
+}
+static void ip_regroup(IpFrame *cur, IpFrame *prev)
+{
+    uint32_t nc, np, i, q;
+    IpRun *pr;
+    {   /* test: OOGIE_INTERP_RUNS=0 keeps the quad-by-quad pairing */
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("OOGIE_INTERP_RUNS"); on = !(e && *e == '0'); }
+        if (!on) return;
+    }
+    if (!prev->n || prev->bad) return;
+    nc = ip_runs(0, cur);
+    np = ip_runs(1, prev);
+    pr = s_iprun[1];
+    /* ordinal of each run within its state, in draw order */
+    for (int fi = 0; fi < 2; fi++) {
+        IpRun *rr = s_iprun[fi];
+        uint32_t n = s_iprun_n[fi], a, b;
+        for (a = 0; a < n; a++) {
+            uint32_t o = 0;
+            for (b = a; b-- > 0 && a - b <= 4096; ) if (rr[b].sig == rr[a].sig) { o = rr[b].ord + 1; break; }
+            rr[a].ord = o;
+        }
+    }
+    if (np) qsort(pr, np, sizeof *pr, ip_run_cmp);
+    {   /* kd6 (chapter 1 fight): even paired right, a shadow volume's vertices
+         * slide along its outline from one frame to the next (the game builds
+         * the volume again each frame), so blending vertex by vertex opened
+         * cracks along the volume: long dark streaks in the in-between
+         * pictures. Each run is now drawn with this frame's own shape, moved
+         * back by the way its centre went since the frame before (the nearest
+         * run of the same state, any number of quads): the volume stays closed
+         * and follows its character. OOGIE_INTERP_RIGID=0: vertex by vertex. */
+        static int rigid = -1;
+        if (rigid < 0) { const char *e = getenv("OOGIE_INTERP_RIGID"); rigid = !(e && *e == '0'); }
+        if (rigid) {
+            for (i = 0; i < nc; i++) {
+                IpRun *cr = &s_iprun[0][i];
+                uint32_t lo = 0, hi = np, k, best = ~0u, a;
+                float bd = 3e38f, sh[3];
+                s_ipgrp.runs++;
+                while (lo < hi) {
+                    uint32_t m = (lo + hi) / 2;
+                    if (pr[m].sig < cr->sig || (pr[m].sig == cr->sig && pr[m].ord + 24 < cr->ord)) lo = m + 1; else hi = m;
+                }
+                for (k = lo; k < np && pr[k].sig == cr->sig && pr[k].ord <= cr->ord + 24; k++) {
+                    float d;
+                    if (pr[k].taken) continue;
+                    d = fabsf(pr[k].cen[0] - cr->cen[0]) + fabsf(pr[k].cen[1] - cr->cen[1]) + fabsf(pr[k].cen[2] - cr->cen[2]);
+                    if (pr[k].len != cr->len) d += 1e-4f * (cr->ext + 1.0f);   /* same size first when as near */
+                    if (d < bd) { bd = d; best = k; }
+                }
+                if (best == ~0u || !(bd <= 0.5f * cr->ext + 1e-4f)) {
+                    for (q = 0; q < cr->len; q++) { cur->r[cr->start + q].match = -1; cur->r[cr->start + q].syn = 0; }
+                    if (best == ~0u) s_ipgrp.no_twin++; else s_ipgrp.far_run++;
+                    s_ipgrp.refused++; s_ipgrp.quads_refused += cr->len;
+                    continue;
+                }
+                pr[best].taken = 1;
+                for (a = 0; a < 3; a++) sh[a] = cr->cen[a] - pr[best].cen[a];
+                for (q = 0; q < cr->len; q++) {
+                    IpRec *c = &cur->r[cr->start + q];
+                    size_t bytes = (size_t)c->b.nverts * c->b.ninputs * 16, off;
+                    uint32_t v, st = c->b.ninputs * 4;
+                    float *dst;
+                    off = ipf_put(cur, NULL, bytes);
+                    if (cur->bad) { c->match = -1; c->syn = 0; continue; }
+                    dst = (float *)(cur->d + off);
+                    memcpy(dst, cur->d + c->i_off, bytes);
+                    for (v = 0; v < c->b.nverts; v++)
+                        for (a = 0; a < 3; a++) dst[(size_t)v * st + a] -= sh[a];
+                    c->syn = 1; c->syn_off = off;
+                    c->match = (int32_t)pr[best].start;      /* the frame before's constants (camera) */
+                }
+                s_ipgrp.blended++;
+                if (pr[best].len != cr->len) s_ipgrp.rotated++;   /* counted as "other size" */
+            }
+            return;
+        }
+    }
+    for (i = 0; i < nc; i++) {
+        IpRun *cr = &s_iprun[0][i];
+        uint32_t lo = 0, hi = np, k, best = ~0u, nsamp = 0;
+        float bd = 3e38f;
+        s_ipgrp.runs++;
+        while (lo < hi) {   /* first run of this state at or after this place */
+            uint32_t m = (lo + hi) / 2;
+            if (pr[m].sig < cr->sig || (pr[m].sig == cr->sig && pr[m].ord + 24 < cr->ord)) lo = m + 1; else hi = m;
+        }
+        uint32_t bshift = 0, sh;
+        int ok;
+        for (k = lo; k < np && pr[k].sig == cr->sig && pr[k].ord <= cr->ord + 24; k++) {
+            if (pr[k].taken || pr[k].len != cr->len) continue;
+            /* every rotation: the game may start a volume's quads at another edge */
+            for (sh = 0; sh < cr->len && sh < 32; sh++) {
+                float d = 0.0f;
+                for (q = 0; q < cr->len && d < bd; q++)
+                    d += ip_pdist(cur, &cur->r[cr->start + q], prev, &prev->r[pr[k].start + (q + sh) % cr->len], bd - d);
+                if (d < bd) { bd = d; best = k; bshift = sh; }
+            }
+        }
+        for (q = 0; q < cr->len; q++) { uint32_t nv = cur->r[cr->start + q].b.nverts; nsamp += nv < 8 ? nv : 8; }
+        ok = best != ~0u && nsamp && bd / (float)nsamp <= 0.25f * cr->ext + 1e-6f;
+        if (best == ~0u) s_ipgrp.no_twin++; else if (!ok) s_ipgrp.far_run++;
+        for (q = 0; ok && q < cr->len; q++) {   /* and each quad near its own partner (its size, or a quarter of the shadow's) */
+            const IpRec *c = &cur->r[cr->start + q];
+            const float *pp = (const float *)(cur->d + c->i_off);
+            uint32_t nv = c->b.nverts, st = c->b.ninputs * 4, v, a, ns = nv < 8 ? nv : 8;
+            float lo3[3] = { 3e38f, 3e38f, 3e38f }, hi3[3] = { -3e38f, -3e38f, -3e38f }, e, d;
+            for (v = 0; v < ns; v++) {
+                uint32_t vv = nv > 8 ? (uint32_t)((uint64_t)v * (nv - 1) / 7) : v;
+                for (a = 0; a < 3; a++) { float x = pp[vv * st + a]; if (x < lo3[a]) lo3[a] = x; if (x > hi3[a]) hi3[a] = x; }
+            }
+            e = (hi3[0] - lo3[0]) + (hi3[1] - lo3[1]) + (hi3[2] - lo3[2]);
+            d = ip_pdist(cur, c, prev, &prev->r[pr[best].start + (q + bshift) % cr->len], 3e38f);
+            if (!(d / (float)ns <= fmaxf(e, 0.25f * cr->ext) + 1e-6f)) { ok = 0; s_ipgrp.far_quad++; }
+        }
+        if (ok) {
+            pr[best].taken = 1;
+            for (q = 0; q < cr->len; q++) cur->r[cr->start + q].match = (int32_t)(pr[best].start + (q + bshift) % cr->len);
+            s_ipgrp.blended++;
+            if (bshift) s_ipgrp.rotated++;
+        } else {
+            for (q = 0; q < cr->len; q++) cur->r[cr->start + q].match = -1;
+            s_ipgrp.refused++; s_ipgrp.quads_refused += cr->len;
+        }
+    }
+}
+
+/* Draws from a shared vertex buffer (kfin5, chapter 1): several objects are
+ * written one after another into one buffer, so when one appears or goes,
+ * every later object starts at another first index and its name (which holds
+ * the vertex address and first index) is new: 100-180 draws a frame went
+ * unmatched and whole frames lost their in-between pictures. A second pass
+ * at the flip pairs what is still unmatched by program, texture and counts,
+ * among the draws of the frame before that nothing claimed: the one with the
+ * closest constants whose vertices lie in the same place (model space). */
+static void ip_rematch(IpFrame *cur, IpFrame *prev)
+{
+    static int32_t *head, *next; static uint32_t cap;
+    enum { H = 4096 };
+    uint32_t stamp = s_ip_gen + 1, i, need = 0;
+    {
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("OOGIE_INTERP_REMATCH"); on = !(e && *e == '0'); }
+        if (!on || !prev->n || prev->bad) return;
+    }
+    for (i = 0; i < cur->n; i++) {
+        const IpRec *c = &cur->r[i];
+        if (c->type == IPR_VSH && c->cap_ok == 2 && c->match < 0 && !ip_inline(c)) { need = 1; break; }
+    }
+    if (!need) return;
+    if (cap < prev->n) {
+        free(next); cap = prev->n + 4096; next = (int32_t *)malloc(cap * sizeof *next);
+        if (!next) { cap = 0; return; }
+    }
+    if (!head && !(head = (int32_t *)malloc(H * sizeof *head))) return;
+    for (i = 0; i < H; i++) head[i] = -1;
+#define IP_K2(c) ((uint32_t)(((uintptr_t)(c)->vs * 2654435761u) ^ (c)->vsh_i * 40503u ^ (c)->b.nverts * 2246822519u ^ (c)->b.nindices * 3266489917u ^ ((c)->has_tex ? (c)->tex.offset : 0u)) & (H - 1))
+    for (i = prev->n; i-- > 0; ) {
+        const IpRec *p = &prev->r[i];
+        if (p->type != IPR_VSH || p->cap_ok != 2 || p->taken == stamp || ip_inline(p)) continue;
+        { uint32_t h = IP_K2(p); next[i] = head[h]; head[h] = (int32_t)i; }
+    }
+    for (i = 0; i < cur->n; i++) {
+        IpRec *c = &cur->r[i];
+        int32_t j, best = -1;
+        float bd = 3e38f;
+        if (c->type != IPR_VSH || c->cap_ok != 2 || c->match >= 0 || ip_inline(c)) continue;
+        for (j = head[IP_K2(c)]; j >= 0; j = next[j]) {
+            const IpRec *p = &prev->r[j];
+            float d;
+            if (p->taken == stamp || p->vs != c->vs || p->vsh_i != c->vsh_i || p->b.nverts != c->b.nverts
+                || p->b.nindices != c->b.nindices || p->b.ninputs != c->b.ninputs || p->b.input_mask != c->b.input_mask
+                || p->has_tex != c->has_tex || (c->has_tex && p->tex.offset != c->tex.offset))
+                continue;
+            d = ip_cdist((const float *)(cur->d + c->vc_off), (const float *)(prev->d + p->vc_off), bd);
+            if (d < bd) { bd = d; best = j; }
+        }
+        if (best >= 0 && (c->b.input_mask & 1) && c->b.ninputs && c->b.nverts) {
+            /* the same model: its vertices (model space) in the same place */
+            const float *pp = (const float *)(cur->d + c->i_off);
+            uint32_t nv = c->b.nverts, st = c->b.ninputs * 4, v, a, ns = nv < 8 ? nv : 8;
+            float lo3[3] = { 3e38f, 3e38f, 3e38f }, hi3[3] = { -3e38f, -3e38f, -3e38f }, e, d;
+            for (v = 0; v < ns; v++) {
+                uint32_t vv = nv > 8 ? (uint32_t)((uint64_t)v * (nv - 1) / 7) : v;
+                for (a = 0; a < 3; a++) { float x = pp[vv * st + a]; if (x < lo3[a]) lo3[a] = x; if (x > hi3[a]) hi3[a] = x; }
+            }
+            e = (hi3[0] - lo3[0]) + (hi3[1] - lo3[1]) + (hi3[2] - lo3[2]);
+            d = ip_pdist(cur, c, prev, &prev->r[best], 3e38f);
+            if (!(d / (float)ns <= 0.25f * e + 1e-6f)) best = -1;
+        }
+        if (best >= 0) { c->match = best; prev->r[best].taken = stamp; s_ipgrp.rematched++; }
+        else s_ipgrp.unmatched++;
+    }
+#undef IP_K2
+}
+
+/* Every target the replay draws into is put back after the pictures (kb5,
+ * chapter 1: the game's motion-trail effect carries an off-screen picture
+ * from one frame into the next, ping-ponging 00B22000/00B32000 and
+ * 00B42000/00B52000; test 2 restored only the shown picture, so the
+ * in-between pictures were baked into the trail and the next real frames
+ * smeared). The replay still draws them, in order, for its own picture. */
+typedef struct { RenderTarget *rt; ID3D11Texture2D *save; D3D11_TEXTURE2D_DESC d; } IpSave;
+#define IP_SAVES 24
+static IpSave s_ipsv[IP_SAVES];
+static int s_ipsv_n, s_ipsv_live;
+static int ip_save_add(RenderTarget *t)
+{
+    int i;
+    D3D11_TEXTURE2D_DESC d;
+    if (!t || !t->tex) return 1;
+    for (i = 0; i < s_ipsv_live; i++) if (s_ipsv[i].rt == t) return 1;
+    if (s_ipsv_live == IP_SAVES) return 0;
+    i = s_ipsv_live;
+    ID3D11Texture2D_GetDesc(t->tex, &d);
+    if (!s_ipsv[i].save || memcmp(&d, &s_ipsv[i].d, sizeof d)) {
+        if (s_ipsv[i].save) ID3D11Texture2D_Release(s_ipsv[i].save);
+        s_ipsv[i].save = NULL;
+        s_ipsv[i].d = d;
+        d.BindFlags = 0; d.MiscFlags = 0; d.CPUAccessFlags = 0; d.Usage = D3D11_USAGE_DEFAULT;
+        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &d, NULL, &s_ipsv[i].save))) { s_ipsv[i].save = NULL; return 0; }
+    }
+    s_ipsv[i].rt = t;
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ipsv[i].save, (ID3D11Resource *)t->tex);
+    s_ipsv_live++;
+    if (s_ipsv_live > s_ipsv_n) s_ipsv_n = s_ipsv_live;
+    return 1;
+}
+static int ip_save_targets(const IpFrame *cur, RenderTarget *shown)
+{
+    uint32_t i;
+    s_ipsv_live = 0;
+    if (!ip_save_add(shown)) return 0;
+    for (i = 0; i < cur->n; i++) {
+        const IpRec *c = &cur->r[i];
+        RenderTarget *t = c->type == IPR_VSH ? (c->cap_ok == 2 ? c->rt : NULL) : find_rt_by_va(c->s.color_va);
+        if (!ip_save_add(t)) {   /* more targets than slots: restore what was saved, no pictures */
+            static int warned;
+            if (!warned++) fprintf(stderr, "[INTERP] more than %d targets in a frame: no in-between pictures for it\n", IP_SAVES);
+            s_ipsv_live = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+static void ip_restore_targets(void)
+{
+    int i;
+    for (i = 0; i < s_ipsv_live; i++)
+        if (s_ipsv[i].rt && s_ipsv[i].rt->tex)
+            ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ipsv[i].rt->tex, (ID3D11Resource *)s_ipsv[i].save);
+    s_ipsv_live = 0;
 }
 
 /* In-between pictures for this flip, then the caller shows the real frame.
@@ -6043,10 +6493,28 @@ static int ip_show_between(RenderTarget *r)
     s_ipst.mb += cur->dn / 1048576.0;
     if (!cur->n || cur->bad) { s_ipst.skipped++; return 0; }
     gpu = ipg_avail();
-    for (i = 0; i < cur->n; i++)          /* matched while recording (ipt_find) */
-        if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) { nc++; if (cur->r[i].match >= 0) matched++; }
-    if (!prev->n || prev->bad) matched = 0;
-    few = !nc || matched * 10 < nc * 8;   /* a cut or a new scene: no blending */
+    ip_regroup(cur, prev);                /* inline draws (shadows) as whole runs */
+    ip_rematch(cur, prev);                /* draws whose first index moved in a shared buffer */
+    /* A cut or a new scene: no blending. Judged by the draws with a vertex
+     * address; inline draws (shadows, menus, sprites) only when a frame has
+     * nothing else, as their runs may be drawn as is on purpose. */
+    {
+        uint32_t ni = 0, mi = 0;
+        for (i = 0; i < cur->n; i++)      /* matched while recording (ipt_find), inline runs by ip_regroup */
+            if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) {
+                if (ip_inline(&cur->r[i])) { ni++; if (cur->r[i].match >= 0) mi++; }
+                else { nc++; if (cur->r[i].match >= 0) matched++; }
+            }
+        if (!prev->n || prev->bad) matched = mi = 0;
+        few = nc ? matched * 10 < nc * 3 : (!ni || mi * 10 < ni * 3);   /* cuts match 0-3%; effects that are new each frame brought play to 40-80% (kfin6) */
+        if (!nc) { nc = ni; matched = mi; }
+    }
+    if (few) {   /* why (first 40 and every 500th) */
+        static unsigned nf;
+        if (cur->n > 200 && (nf++ < 60 || nf % 500 == 0))
+            fprintf(stderr, "[INTERP] f=%u not blended: %u of %u draws found in the frame before (%u records, before %u%s)\n",
+                    s_frame, matched, nc, cur->n, prev->n, prev->bad ? ", bad" : "");
+    }
     pg = &s_ipg[s_ipf_cur ^ 1];
     if (gpu) {
         LARGE_INTEGER tu = ip_now();
@@ -6062,14 +6530,8 @@ static int ip_show_between(RenderTarget *r)
     s_ipst.tried++;
     t1 = ip_now(); s_ipst.t_match += t1.QuadPart - t0.QuadPart - up; t0 = t1;   /* the upload counted on its own */
 
-    ID3D11Texture2D_GetDesc(r->tex, &td);
-    if (!s_ip_save || memcmp(&td, &s_ip_sd, sizeof td)) {
-        if (s_ip_save) ID3D11Texture2D_Release(s_ip_save);
-        s_ip_save = NULL;
-        s_ip_sd = td;
-        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ip_save))) { s_ip_save = NULL; return 0; }
-    }
-    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ip_save, (ID3D11Resource *)r->tex);
+    (void)td;
+    if (!ip_save_targets(cur, r)) { s_ipst.skipped++; return 0; }
 
     {   /* mode 2: these are the frames saved and captured; test: OOGIE_INTERP_SHOTS=1 saves them too, between the real ones */
         static int sh = -1;
@@ -6091,8 +6553,12 @@ static int ip_show_between(RenderTarget *r)
         if (g_pc.vsync) swap_wait();          /* the next refresh */
         QueryPerformanceCounter(&now);
         t = now.QuadPart;
-        if (g_pc.vsync ? D - t < R / 2 : D - t < (gap ? gap / 2 : freq.QuadPart / 2000))
-            break;                            /* the real frame's turn */
+        {   /* test: OOGIE_INTERP_FORCE=1 always makes one picture a flip (a slow PC still shows them) */
+            static int force = -1;
+            if (force < 0) { const char *e = getenv("OOGIE_INTERP_FORCE"); force = e && *e == '1'; }
+            if ((g_pc.vsync ? D - t < R / 2 : D - t < (gap ? gap / 2 : freq.QuadPart / 2000)) && !(force && n == 0))
+                break;                        /* the real frame's turn */
+        }
         a = (float)(t - S) / (float)P;
         if (a < 0.01f) a = 0.01f;
         if (a > 0.99f) a = 0.99f;
@@ -6110,8 +6576,8 @@ static int ip_show_between(RenderTarget *r)
         last = t;
         n++;
     }
+    ip_restore_targets();
     if (n) {
-        ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->tex, (ID3D11Resource *)s_ip_save);
         s_ipst.shown++;
         s_ipst.pics += n;
     }
@@ -6133,13 +6599,15 @@ static void ip_flip_end(void)
         QueryPerformanceFrequency(&f);
         ms = 1000.0 / (double)f.QuadPart / n;
         fprintf(stderr, "[INTERP] %u flips: %u with in-between pictures (%u pictures, %.1f a flip), %u without (few matches), %u skipped; matched %.1f%%;"
-                        " pairs %u, not blended: %u by attributes, %u by bones;"
+                        " pairs %u, not blended: %u by attributes, %u by bones; repeated draws %u, paired out of order %u, no partner near %u; inline runs %u, moved %u (other size %u), drawn as is %u (%u quads; no run of that size %u, too far %u, a quad too far %u); found again by shape %u, new %u;"
                         " per flip: game %.2f ms, record %.2f ms, match %.2f ms, upload %.2f ms, replay %.2f ms, present %.2f ms, wait %.2f ms, %.1f MB recorded\n",
                 s_ipst.flips, s_ipst.shown, s_ipst.pics, s_ipst.shown ? (double)s_ipst.pics / s_ipst.shown : 0.0,
                 s_ipst.few, s_ipst.skipped, s_ipst.tried ? 100.0 * s_ipst.matched / s_ipst.tried : 0.0,
-                s_ipguard.pairs, s_ipguard.bad_attr, s_ipguard.bad_bones,
+                s_ipguard.pairs, s_ipguard.bad_attr, s_ipguard.bad_bones, s_ippick.dup, s_ippick.reorder, s_ippick.far_, s_ipgrp.runs, s_ipgrp.blended, s_ipgrp.rotated, s_ipgrp.refused, s_ipgrp.quads_refused, s_ipgrp.no_twin, s_ipgrp.far_run, s_ipgrp.far_quad, s_ipgrp.rematched, s_ipgrp.unmatched,
                 s_ipst.t_game * ms, s_ip_t_rec * ms, s_ipst.t_match * ms, s_ipst.t_upload * ms, s_ipst.t_replay * ms, s_ipst.t_present * ms, s_ipst.t_wait * ms, s_ipst.mb / n);
         memset(&s_ipguard, 0, sizeof s_ipguard);
+        memset(&s_ippick, 0, sizeof s_ippick);
+        memset(&s_ipgrp, 0, sizeof s_ipgrp);
         s_ip_t_rec = 0;
         memset(&s_ipst, 0, sizeof s_ipst);
         t = now;

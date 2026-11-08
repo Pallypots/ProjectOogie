@@ -1,8 +1,8 @@
 # High frame rate: findings and plan (2026-11-01)
 
-Status (2026-11-07 night): "0.3.0 High Frame Rate test 2" on the branch high-frame-rate, for the owner to try
-on the 165 Hz desktop. One setting, F1 > Display > Frame Rate (settings.ini `frame_rate`: 30, 60, 120, 144,
-165, 240, 360, 0 unlimited), with Vertical Sync. Goes into a main release only after the owner confirms it.
+Status (2026-11-08): "0.3.0 High Frame Rate test 3" on the branch high-frame-rate, for the owner to try
+on the 165 Hz desktop. Test 2 still flickered above 60 there (see Test 3). Goes into a main release only
+after the owner confirms it.
 
 ## Why the cap cannot simply be raised
 
@@ -127,3 +127,46 @@ characters including Jack, black lines from Jack, textures shooting out; and the
 - Next: if the hold while the game computes shows as judder at 144-240 Hz, make the in-between pictures ahead
   of time and present them during the next frame's work (a presenter thread, or presents from the executor's
   idle time).
+
+## Test 3 (2026-11-08; TEST_RESULTS k4*, ka*, kb*, kc*, kd*, kg5, kr5, kfin*, kl_*)
+
+Owner's test 2 report (RTX 4090, 165 Hz, render 4.5x, PS2 HD pack, play.log of the session): at 30 and 60
+fine; above 60 flicker, see-through walls and Jack, black lines down from Jack. The log showed the pacing
+working (161-163 pictures a second at 165 Hz, game 60). Test 2 had been checked on still scenes; the faults
+only show while things move.
+
+- **Measure first (Verified):** OOGIE_INTERP_ALPHA=1 (pictures placed on the real frame) gave pictures equal
+  to the real frame pixel for pixel (ka1: 0 pixels over 24 of 1,228,800), so the replay itself was right and
+  the blending was wrong. ALPHA=0 (on the frame before) should equal the frame before: test 2's code missed by
+  ~8,900 pixels in chapter 1 (ka0), a pale band from the skeleton's shadow. This "a=0 test" is the score used
+  since. OOGIE_INTERP_FORCE=1 makes one picture a flip even on a slow PC (the laptop at 4.5x).
+- **Cause 1, shadows (Verified, kd4 dump):** the shadows are ~560 inline quads a frame (CPU-written, no vertex
+  address, position only), each shadow 5-19 quads drawn three times (stencil mark, shade, unmark). Pairing by
+  name and count shifted every later quad when one shadow had a quad more or less, and the three passes then
+  disagreed and left stencil behind: pale bands, black streaks, shade over walls (owner's photos).
+  Pairing quad by quad by place: 1,790 pixels (kb0). Pairing whole runs (same stencil/colour/cull state,
+  same quad count, near): 37 pixels (kc0), but half-way pictures still had streaks in the chapter 1 fight
+  (kr5): the game rebuilds each shadow volume every frame and its vertices slide along the outline, so
+  vertex-by-vertex blending opens cracks. **Now** (`ip_regroup`, rigid): each run is drawn with this frame's
+  own shape moved back by the way its centre moved since the frame before (nearest run of the same state
+  within 24 places, any quad count, within half its size; shifted copy in the frame's data block, replay
+  shader takes it from t8 when ipp.w is set). Volumes stay closed. kg5 and every chapter checked: no streaks.
+  97-99.5% of runs move, the rest (new shadows) are drawn as this frame has them.
+- **Cause 2, trails (Verified, kb5 vs koff):** the game's motion-trail effect ping-pongs off-screen targets
+  (00B22000/00B32000, 00B42000/00B52000) from frame to frame; test 2 restored only the shown picture after the
+  in-between pictures, so they were baked into the trail and the next real frames smeared. Every target the
+  replay draws into is now saved and put back (`ip_save_targets`, up to 24).
+- **Cause 3, skipped frames (Verified, kfin5):** objects written one after another into a shared vertex buffer
+  change first index when one appears or goes, so their names were new and 100-180 draws a frame went
+  unmatched; whole frames were judged a new scene and lost their in-between pictures (judder). A second pass
+  pairs them by program, texture, counts, closest constants and same model-space place (`ip_rematch`). A frame
+  counts as a new scene below 30% matched (cuts: 0-3%; effects new each frame took play to 40-80%), judged on
+  draws with a vertex address (inline runs may be drawn as is on purpose; menus are all inline and are judged
+  on them).
+- Also: repeated draws of one name are paired by closest constants (`ip_pick`; it almost never differed from
+  draw order in chapter 1). New log fields in the [INTERP] line: repeated draws, inline runs moved/drawn as
+  is, found again by shape. `[INTERP] f=N not blended` names frames judged a new scene.
+- **Scores (laptop, Intel Arc 140V, 2x, 60 Hz):** a=0 test chapters 1, 3, 7, 10, 16: 553, 0, 0, 0, 0 pixels
+  (kc0, kb0). Half-way pictures (ALPHA=0.5) looked at in chapters 1 (walk and fight), 3, 5, 7, 10, 13, 16
+  and the later chapters (kl_*): no bands, streaks or see-through walls. Matching cost ~0.5 ms a flip.
+- Not verified: the owner's 165 Hz screen, 4.5x on a fast GPU, the PS2 HD pack with this build.

@@ -405,3 +405,5 @@ See docs/IMPROVEMENT_PLAN.md.
 - 0.3.0 released 2026-11-07 on the owner's word, with the announcement on the release page (Discussions are off) and a reply on #13.
 
 - 2026-11-07 night, branch high-frame-rate: High Frame Rate test 2. Test 1's broken in-between pictures (owner: flicker, see-through Jack) traced to `sadd` dropping the replay header of vertex programs 6/7 (fixed, Verified); culling kept per draw; one Frame Rate setting (30/60/120/144/165/240/360/Unlimited) plus Vertical Sync replaces the cap and the test switch; pictures placed by time for any refresh rate; [FPS] log line. docs/HIGH_FRAME_RATE.md, RELEASE_NOTES_0.3.0_hfr_test2.md.
+
+- 2026-11-08, branch high-frame-rate: High Frame Rate test 3. Owner's test 2 (165 Hz desktop) still flickered above 60. Reproduced on the laptop while moving; three causes fixed (Verified): shadow quads paired wrong and volumes cracked when blended (now moved whole, ip_regroup), the motion-trail targets not restored after the in-between pictures (ip_save_targets), shared-buffer draws unmatched so frames lost their pictures (ip_rematch). docs/HIGH_FRAME_RATE.md Test 3, RELEASE_NOTES_0.3.0_hfr_test3.md.
