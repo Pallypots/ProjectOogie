@@ -37,13 +37,14 @@ typedef struct {
     int hide_borders;    /* hide the game's own black edge masks / film bars */
     int side_fill;       /* 4:3 screens in a wide window: 0 black, 1 blur, 2 stretch */
     int vsync;           /* 0 off, 1 on */
-    int fps_cap;         /* 0 none, else frames per second */
+    int fps_cap;         /* the game's own step rate: always 60 (a test's OOGIE_FPS_CAP may change it) */
+    int frame_rate;      /* pictures a second: 30, 60, 120, 144, 165, 240, 360, or 0 unlimited
+                            (above 60: in-between pictures, d3d11_backend.c; 30: every other frame shown) */
     int render_scale;    /* 0 auto, -1 native, 1..4 x 640x480, or a height 240..4320 (d3d11_backend.c) */
     int aniso;           /* 1 off, 2,4,8,16 */
     int aa;              /* anti-aliasing: 0 off, 1 low, 2 high (d3d11_backend.c post_process) */
     int sharpen;         /* 0 off, 1 low, 2 medium, 3 high */
     int mipmaps;         /* mip chains for textures the game mip-filters (d3d11_backend.c tex_upload) */
-    int high_frame_rate; /* test: in-between pictures (OOGIE_INTERP), at the next start */
     int hud_edges;       /* widescreen: corner HUD pieces at the screen edges */
     int tex_dump;        /* Mods > Save Game Textures: textures to texture_dump\ */
     int ps2_hd;          /* Mods > PS2 HD Textures: the PCSX2 HD pack (assets/texpacks/ps2_hd.map) */

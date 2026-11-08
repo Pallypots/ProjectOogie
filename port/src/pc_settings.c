@@ -46,13 +46,11 @@ static const char s_default_ini[] =
 "field_of_view = 100\n"
 "; Wait for the monitor's refresh before showing a frame (no tearing).\n"
 "vsync = 1\n"
-"; Frame-rate cap: 60 (the original speed) or 30. The game's logic, films and\n"
-"; music run per frame, so other values are not offered.\n"
-"fps_cap = 60\n"
-"; High frame rate test: 1 draws a blended picture between the game's frames\n"
-"; (120 pictures a second; the game itself stays at 60). Best on a 120 or 240 Hz\n"
-"; screen. Takes effect the next time the game starts.\n"
-"high_frame_rate = 0\n"
+"; Frame rate: pictures a second. 30, 60 (the original), 120, 144, 165, 240,\n"
+"; 360, or 0 for unlimited (with vsync on: your monitor's refresh rate). The\n"
+"; game always plays at its normal speed; above 60 the extra pictures are\n"
+"; blended between the game's own frames.\n"
+"frame_rate = 60\n"
 "; Language of the menus and text: 1 English, 4 French, 3 German, 5 Spanish,\n"
 "; 6 Italian. Voices stay English; accented letters show as plain letters\n"
 "; (the font on the US disc has none). Takes effect at the next start.\n"
@@ -296,8 +294,6 @@ void pc_settings_load(void)
     }
 
     to_env("Display", "window_scale", "OOGIE_WINDOW_SCALE");
-    to_env("Display", "fps_cap", "OOGIE_FPS_CAP");
-    to_env("Display", "high_frame_rate", "OOGIE_INTERP");
     pc_config_load();
 }
 
@@ -438,12 +434,19 @@ void pc_config_load(void)
     if (g_pc.fov < 70 || g_pc.fov > 140) g_pc.fov = 100;
     g_pc.vsync = pc_settings_int("Display", "vsync", 1) != 0;
     v = getenv("OOGIE_FPS_CAP");                       /* a test's override wins */
-    g_pc.fps_cap = (v && *v) ? atoi(v) : pc_settings_int("Display", "fps_cap", 60);
-    /* The game's logic, films and music run per frame: above 60 they run
-     * fast (owner 2026-10-18), so until a real high-frame-rate mode exists
-     * the cap is 30 or 60. A test's OOGIE_FPS_CAP still wins. */
-    if (!(v && *v) && g_pc.fps_cap != 30) g_pc.fps_cap = 60;
+    /* The game's logic, films and music move one step per frame (owner
+     * 2026-10-18: above 60 they ran fast), so the game always steps 60 times
+     * a second; the frame rate the player picks is pictures a second
+     * (docs/HIGH_FRAME_RATE.md). A test's OOGIE_FPS_CAP still wins. */
+    g_pc.fps_cap = (v && *v) ? atoi(v) : 60;
     if (g_pc.fps_cap < 0) g_pc.fps_cap = 0;
+    v = pc_settings_get("Display", "frame_rate");
+    if (v && *v) g_pc.frame_rate = atoi(v);
+    else if (pc_settings_int("Display", "high_frame_rate", 0)) g_pc.frame_rate = 0;   /* test 1's setting: unlimited (the monitor's rate with vsync) */
+    else g_pc.frame_rate = pc_settings_int("Display", "fps_cap", 60) == 30 ? 30 : 60;   /* 0.3.0 and older */
+    if (g_pc.frame_rate != 0 && g_pc.frame_rate != 30 && g_pc.frame_rate != 120 && g_pc.frame_rate != 144
+        && g_pc.frame_rate != 165 && g_pc.frame_rate != 240 && g_pc.frame_rate != 360)
+        g_pc.frame_rate = 60;
     g_pc.render_scale = pc_settings_int("Graphics", "render_scale", 0);
     if (g_pc.render_scale < -1 || (g_pc.render_scale > 4 && (g_pc.render_scale < 240 || g_pc.render_scale > 4320)))
         g_pc.render_scale = 0;
@@ -455,7 +458,6 @@ void pc_config_load(void)
     if (g_pc.sharpen < 0 || g_pc.sharpen > 3) g_pc.sharpen = 1;
     g_pc.mipmaps = pc_settings_int("Graphics", "mipmaps", 1) != 0;
     g_pc.hud_edges = pc_settings_int("Display", "hud_edges", 1) != 0;
-    g_pc.high_frame_rate = pc_settings_int("Display", "high_frame_rate", 0) != 0;
     g_pc.tex_dump = pc_settings_int("Mods", "save_textures", 0) != 0;
     g_pc.ps2_hd = pc_settings_int("TexPacks", "ps2_hd", 1) != 0;
     g_pc.button_style = pc_settings_int("TexPacks", "button_prompts", 0);

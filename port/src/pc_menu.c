@@ -125,7 +125,8 @@ static const Opt o_btnstyle[] = { { "Automatic (follows your pad)", 0 }, { "Orig
                                   { "Modern Xbox", 2 }, { "PlayStation", 3 } };
 static const Opt o_mode[] = { { "Windowed", 0 }, { "Fullscreen", 1 } };
 static const Opt o_aspect[] = { { "4:3 (Original)", 0 }, { "Widescreen (Fill Screen)", 1 }, { "Stretch to Window", 2 } };
-static const Opt o_fps[] = { { "30 (half speed: slow motion)", 30 }, { "60 (Original)", 60 } };
+static const Opt o_fps[] = { { "30", 30 }, { "60 (Original)", 60 }, { "120", 120 }, { "144", 144 },
+    { "165", 165 }, { "240", 240 }, { "360", 360 }, { "Unlimited", 0 } };
 static const Opt o_side[] = { { "Black", 0 }, { "Blurred Picture", 1 }, { "Stretch", 2 } };
 /* Render Resolution by the height the game's 480 lines are drawn at (the
  * width follows the shape); 1..4 are the old multiples, kept for old
@@ -205,12 +206,10 @@ static Item s_items[] = {
       IT_CHOICE, &g_pc.hud_edges, o_onoff, 2, 1, "Display", "hud_edges" },
     { P_DISPLAY, "Field of View", "How wide the game camera sees. 100% is the original.",
       IT_CHOICE, &g_pc.fov, o_fov, 15, 100, "Display", "field_of_view" },
-    { P_DISPLAY, "Vertical Sync", "Wait for the monitor before showing each frame: no tearing.",
+    { P_DISPLAY, "Vertical Sync", "On: each picture waits for the monitor, no tearing, at most its refresh rate. Off: no waiting, may tear.",
       IT_CHOICE, &g_pc.vsync, o_onoff, 2, 1, "Display", "vsync" },
-    { P_DISPLAY, "Frame Rate Cap", "Keep 60: the game, its films and music run per frame, so 30 plays everything at half speed.",
-      IT_CHOICE, &g_pc.fps_cap, o_fps, 2, 60, "Display", "fps_cap" },
-    { P_DISPLAY, "High Frame Rate (Test)", "A blended picture between frames: 120 a second, the game stays at 60. Best on 120 or 240 Hz. Keep the cap at 60.",
-      IT_CHOICE, &g_pc.high_frame_rate, o_onoff, 2, 0, "Display", "high_frame_rate", NULL, 1 },
+    { P_DISPLAY, "Frame Rate", "Pictures a second; the game always plays at normal speed. Pick your monitor's refresh rate, or Unlimited with Vertical Sync on.",
+      IT_CHOICE, &g_pc.frame_rate, o_fps, 8, 60, "Display", "frame_rate" },
 
     { P_GRAPHICS, "Quality Preset", "Sets the five settings below at once: Low for weak laptops, Ultra for the strongest PCs.",
       IT_CHOICE, &s_preset, o_preset, 5, 3, "Graphics", "preset" },

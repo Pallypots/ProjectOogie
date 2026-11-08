@@ -403,3 +403,5 @@ See docs/IMPROVEMENT_PLAN.md.
 - The owner asked for a Chapter Select choice and a Boss Rush. A first version used the F1 style overlay and an F1 Extras page; the owner rejected it, it must be part of the game's own menu. Both were removed.
 - Now a real page of the title menu after the difficulty: STORY, CHAPTERS, BOSS RUSH (KNOWN_ISSUES #101). Nothing committed. Open: the owner's own try, real wins in the five untested fights, the unused fourth main menu row ("INFORMATION") if an Extras entry is wanted.
 - 0.3.0 released 2026-11-07 on the owner's word, with the announcement on the release page (Discussions are off) and a reply on #13.
+
+- 2026-11-07 night, branch high-frame-rate: High Frame Rate test 2. Test 1's broken in-between pictures (owner: flicker, see-through Jack) traced to `sadd` dropping the replay header of vertex programs 6/7 (fixed, Verified); culling kept per draw; one Frame Rate setting (30/60/120/144/165/240/360/Unlimited) plus Vertical Sync replaces the cap and the test switch; pictures placed by time for any refresh rate; [FPS] log line. docs/HIGH_FRAME_RATE.md, RELEASE_NOTES_0.3.0_hfr_test2.md.

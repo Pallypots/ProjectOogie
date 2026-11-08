@@ -88,18 +88,35 @@ typedef struct {
 } OogieVertexExtra;
 const OogieVertexExtra *oogie_backend_vertex_extra(void);
 
-/* High frame rate prototype (OOGIE_INTERP=1, docs/HIGH_FRAME_RATE.md; test
- * only, off by default). Each frame's clears and draws are recorded and, at
- * the flip, replayed once with matched draws' constants and vertex positions
- * blended halfway towards the frame before; that picture is shown, and the
- * real frame half a frame later. OOGIE_INTERP=2 shows only the in-between
- * pictures (to check them). The draw code reads four pieces of the executor's
- * state at draw time; during a replay these answer what was recorded. */
+/* High frame rates (docs/HIGH_FRAME_RATE.md): Frame Rate above 60, or
+ * Unlimited. Each frame's clears and draws are recorded and, at the flip,
+ * replayed with matched draws' constants and vertex positions blended towards
+ * the frame before, once for each in-between picture (ip_show_between).
+ * Switched at a flip (ip_update), from the setting. OOGIE_INTERP=0/1 forces it
+ * off/on for tests; OOGIE_INTERP=2 shows only the in-between pictures (to
+ * check them). The draw code reads four pieces of the executor's state at draw
+ * time; during a replay these answer what was recorded. */
+/* The swap chain (init_device): flip model with a refresh wait, see there. */
+static int s_swap_flip, s_tearing;
+static UINT s_swap_flags;
+static HANDLE s_lat_wait;
+static int s_lat_waited;                 /* swap_wait done since the last Present */
+/* Wait until the swap chain takes a new picture: with vsync, the next refresh. */
+static void swap_wait(void)
+{
+    if (s_lat_wait && !s_lat_waited) {
+        WaitForSingleObjectEx(s_lat_wait, 100, TRUE);
+        s_lat_waited = 1;
+    }
+}
+static volatile LONG s_pictures;         /* Presents, for the frame-rate counter */
+
+static int s_ip_live;
 static int ip_on(void)
 {
     static int m = -1;
-    if (m < 0) { const char *e = getenv("OOGIE_INTERP"); m = e ? atoi(e) : 0; }
-    return m;
+    if (m == -1) { const char *e = getenv("OOGIE_INTERP"); m = (e && *e) ? atoi(e) : -2; }
+    return m != -2 ? m : s_ip_live;
 }
 typedef struct {
     int comb_ok; Nv2aCombiner comb; float fog[3];
@@ -425,7 +442,7 @@ static void back_resize(void)
     ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 0, NULL, NULL);
     ID3D11RenderTargetView_Release(s_back_rtv);
     s_back_rtv = NULL;
-    if (FAILED(IDXGISwapChain_ResizeBuffers(s_swap, 0, w, h, DXGI_FORMAT_UNKNOWN, 0)))
+    if (FAILED(IDXGISwapChain_ResizeBuffers(s_swap, 0, w, h, DXGI_FORMAT_UNKNOWN, s_swap_flags)))
         fprintf(stderr, "[D3D11] ResizeBuffers %ux%u failed\n", w, h);
     else
         cur_w = w, cur_h = h;
@@ -685,20 +702,36 @@ static HRESULT compile_cached(const char *src, size_t len, const char *name, con
 
 typedef struct { char *p; size_t n, cap; } Str;
 
+/* Append formatted text. A piece longer than the space left grows the buffer
+ * and is written again: it used to be dropped silently, which cut the replay
+ * variant's 600-character header out of vertex program 6 (Jack) whenever it
+ * landed near the end of the buffer, so that program failed to compile and Jack
+ * was missing from every in-between picture (owner's test 1: "see through
+ * Jack", flicker). */
 static void sadd(Str *s, const char *fmt, ...)
 {
     va_list ap;
     int k;
-    if (s->cap - s->n < 512) {
-        size_t cap = s->cap ? s->cap * 2 : 8192;
-        char *np = (char *)realloc(s->p, cap);
-        if (!np) return;
-        s->p = np; s->cap = cap;
+    for (;;) {
+        if (s->cap - s->n < 512 || !s->p) {
+            size_t cap = s->cap ? s->cap * 2 : 8192;
+            char *np = (char *)realloc(s->p, cap);
+            if (!np) return;
+            s->p = np; s->cap = cap;
+        }
+        va_start(ap, fmt);
+        k = vsnprintf(s->p + s->n, s->cap - s->n, fmt, ap);
+        va_end(ap);
+        if (k < 0) return;
+        if ((size_t)k < s->cap - s->n) { s->n += (size_t)k; return; }
+        {   /* too long for what is left: make room for it and write it again */
+            size_t cap = s->cap * 2;
+            char *np;
+            while (cap - s->n <= (size_t)k) cap *= 2;
+            if (!(np = (char *)realloc(s->p, cap))) { s->p[s->n] = 0; return; }
+            s->p = np; s->cap = cap;
+        }
     }
-    va_start(ap, fmt);
-    k = vsnprintf(s->p + s->n, s->cap - s->n, fmt, ap);
-    va_end(ap);
-    if (k > 0 && (size_t)k < s->cap - s->n) s->n += (size_t)k;
 }
 
 /* An input as HLSL: `alpha` selects the alpha portion (blue unless the
@@ -989,13 +1022,34 @@ static int init_device(void)
     sd.SampleDesc.Count = 1;
     sd.Windowed = TRUE;
     sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-    if (ip_on()) {
-        /* Interpolation prototype: the flip model queues pictures instead of
-         * blocking each Present until the screen refreshes, so the two
-         * pictures of a frame do not hold the render thread for two
-         * refreshes (ipO: 17-29 fps at a cap of 30 on a 60 Hz screen). */
-        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        sd.BufferCount = 3;
+    {
+        /* Frame Rate (high frame rates, docs/HIGH_FRAME_RATE.md): the flip
+         * model, so pictures are timed by a waitable object that signals at
+         * each refresh (swap_wait) instead of a Present that blocks; tearing
+         * allowed when vsync is off, if the system supports it (Windows 10+).
+         * The Frame Rate can change in the menu, so this is always used;
+         * OOGIE_SWAP_LEGACY=1 keeps the old swap chain (test). If the flip
+         * model cannot be made, the old one is used (s_swap_flip = 0). */
+        const char *e = getenv("OOGIE_SWAP_LEGACY");
+        if (!(e && *e == '1')) {
+            IDXGIFactory1 *f1 = NULL;
+            IDXGIFactory5 *f5 = NULL;
+            BOOL tear = FALSE;
+            if (SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1)) && f1) {
+                if (SUCCEEDED(IDXGIFactory1_QueryInterface(f1, &IID_IDXGIFactory5, (void **)&f5)) && f5) {
+                    if (FAILED(IDXGIFactory5_CheckFeatureSupport(f5, DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tear, sizeof tear)))
+                        tear = FALSE;
+                    IDXGIFactory5_Release(f5);
+                }
+                IDXGIFactory1_Release(f1);
+            }
+            s_tearing = tear ? 1 : 0;
+            sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            sd.BufferCount = 3;
+            sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | (s_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+            s_swap_flags = sd.Flags;
+            s_swap_flip = 1;
+        }
     }
     {
         /* Other PCs (docs/COMPATIBILITY.md): any GPU and driver. Feature
@@ -1033,6 +1087,13 @@ static int init_device(void)
                 IDXGIFactory1_Release(f1);
             }
         }
+        for (int pass = 0; pass < 2 && FAILED(hr); pass++) {
+        if (pass) {
+            if (!s_swap_flip) break;
+            fprintf(stderr, "[D3D11] flip-model swap chain not made: the old one is used\n");
+            sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; sd.BufferCount = 2; sd.Flags = 0;
+            s_swap_flags = 0; s_swap_flip = 0; s_tearing = 0;
+        }
         for (attempt = 0; attempt < 4 && FAILED(hr); attempt++) {
             D3D_DRIVER_TYPE dt = (force_warp || attempt >= 2) ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
             UINT fflags = (attempt & 1) ? 0 : flags;           /* retry without the debug layer */
@@ -1052,6 +1113,7 @@ static int init_device(void)
                         dt == D3D_DRIVER_TYPE_WARP ? "WARP" : "hardware",
                         (fflags & D3D11_CREATE_DEVICE_DEBUG) ? " with the debug layer" : "", (unsigned long)hr);
             }
+        }
         }
         if (pick) IDXGIAdapter_Release(pick);
         if (FAILED(hr)) {
@@ -1090,6 +1152,18 @@ static int init_device(void)
     IDXGISwapChain_GetBuffer(s_swap, 0, &IID_ID3D11Texture2D, (void **)&bb);
     ID3D11Device_CreateRenderTargetView(s_dev, (ID3D11Resource *)bb, NULL, &s_back_rtv);
     ID3D11Texture2D_Release(bb);
+    if (s_swap_flip) {
+        /* One picture queued at most: the waitable object then signals at
+         * each refresh, which is when the next picture is made. */
+        IDXGISwapChain2 *s2 = NULL;
+        if (SUCCEEDED(IDXGISwapChain_QueryInterface(s_swap, &IID_IDXGISwapChain2, (void **)&s2)) && s2) {
+            IDXGISwapChain2_SetMaximumFrameLatency(s2, 1);
+            s_lat_wait = IDXGISwapChain2_GetFrameLatencyWaitableObject(s2);
+            IDXGISwapChain2_Release(s2);
+        }
+        fprintf(stderr, "[D3D11] swap chain: flip model, refresh wait %s, tearing %s\n",
+                s_lat_wait ? "yes" : "no", s_tearing ? "allowed with vsync off" : "not supported");
+    }
     {
         /* Alt+Enter is ours (borderless), not DXGI's exclusive mode. */
         IDXGIFactory *fac = NULL;
@@ -3406,8 +3480,10 @@ typedef struct {
     ID3D11PixelShader *ps; ID3D11VertexShader *vs;
     ID3D11ShaderResourceView *srv[4]; ID3D11SamplerState *smp[4];
     ID3D11BlendState *bs; float bf[4]; ID3D11DepthStencilState *dss; UINT sref;
+    ID3D11RasterizerState *rst;          /* culling as the live draw had it (test 1 used none: outlines covered models) */
     ShaderConsts consts;
 } IpRec;
+static ID3D11RasterizerState *s_last_rst; /* prep_draw's rasterizer state, for ip_cap_prep */
 typedef struct {
     IpRec *r; uint32_t n, cap; unsigned char *d; size_t dn, dcap; int bad;
     size_t *vco; uint32_t nvc, cvc;                 /* offsets of the frame's distinct constant sets */
@@ -3522,6 +3598,7 @@ static void ip_cap_prep(RenderTarget *r, DepthTarget *d, ID3D11PixelShader *ps, 
     IpRec *c = &s_ipf[s_ipf_cur].r[s_ip_cap];
     int st;
     c->rt = r; c->dt = d; c->ps = ps; c->bs = bs; c->dss = dss; c->sref = sref;
+    c->rst = s_last_rst ? s_last_rst : s_rs;
     memcpy(c->bf, bf, sizeof c->bf);
     for (st = 0; st < 4; st++) {
         c->srv[st] = srv[st];
@@ -3966,7 +4043,8 @@ if (flash_rec_on()) {
     ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
     ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, srv);
     ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, smp);
-    ID3D11DeviceContext_RSSetState(s_ctx, rs_for(rs));
+    s_last_rst = rs_for(rs);
+    ID3D11DeviceContext_RSSetState(s_ctx, s_last_rst);
     bf[0] = ((rs->blend_color >> 16) & 0xFF) / 255.0f;
     bf[1] = ((rs->blend_color >> 8) & 0xFF) / 255.0f;
     bf[2] = (rs->blend_color & 0xFF) / 255.0f;
@@ -4181,9 +4259,10 @@ static char *vsh_generate(const OogieVshBatch *b)
     if (s_vsh_replay)
         sadd(&s, "cbuffer VP : register(b2) { float4 pvc[192]; };\n"
                  "cbuffer IP : register(b3) { float4 ipp; };\n"
+                 "cbuffer IPA : register(b4) { float4 ipa; };\n"   /* ipa.x: this picture's place between the two frames */
                  "Buffer<float4> VIN : register(t8);\n"
                  "Buffer<float4> PVIN : register(t9);\n"
-                 "float4 VC(int i) { return ipp.z > 0 ? lerp(pvc[i], vc[i], ipp.y) : vc[i]; }\n"
+                 "float4 VC(int i) { return ipp.z > 0 ? lerp(pvc[i], vc[i], ipa.x) : vc[i]; }\n"
                  "float4 cr(int i) { return (i >= 0 && i < 192) ? VC(i) : VC(0); }\n");
     else
         sadd(&s, "StructuredBuffer<float4> VIN : register(t8);\n"
@@ -4198,7 +4277,7 @@ static char *vsh_generate(const OogieVshBatch *b)
     for (i = 0; i < 16; i++) {
         if (s_vsh_replay && i == 0 && (b->input_mask & 1u)) {
             sadd(&s, "  float4 v0 = VIN[(uint)rt.w + vid * %u];\n"
-                     "  if (ipp.z > 0) v0 = lerp(PVIN[(uint)ipp.x + vid * %u], v0, ipp.y);\n", b->ninputs, b->ninputs);
+                     "  if (ipp.z > 0) v0 = lerp(PVIN[(uint)ipp.x + vid * %u], v0, ipa.x);\n", b->ninputs, b->ninputs);
             k++;
         } else if (b->input_mask & (1u << i))
             sadd(&s, "  float4 v%u = VIN[(uint)rt.w + vid * %u + %u];\n", i, b->ninputs, k++);
@@ -4675,7 +4754,7 @@ static void ip_fast_draw(IpRec *c, const VshConsts *vc, const float *inputs, con
     ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, &s_cb);
     ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 4, c->srv);
     ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 4, c->smp);
-    ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
+    ID3D11DeviceContext_RSSetState(s_ctx, c->rst ? c->rst : s_rs);
     ID3D11DeviceContext_OMSetBlendState(s_ctx, c->bs, c->bf, 0xFFFFFFFFu);
     ID3D11DeviceContext_OMSetDepthStencilState(s_ctx, c->dss, c->sref);
     cbs[0] = s_cb; cbs[1] = s_vcb;
@@ -5027,33 +5106,50 @@ static UINT s_sync_interval;
 static int s_ip_vs;                    /* interpolation: the screen is twice the cap, vsync spaces the two pictures */
 static UINT s_ip_iv = 1;               /* refreshes for the next picture then (1, or 2 when no in-between picture) */
 
-static void pace_flip(void)
-{
-    static int hz = -1;
-    static LARGE_INTEGER freq, next;
-    LARGE_INTEGER now;
+static int s_mon_hz = 60;              /* the window's monitor (choose_sync) */
+static int s_ip_paced;                 /* ip_show_between did this flip's wait */
+static LARGE_INTEGER s_pace_freq, s_pace_next;
 
-    if (hz < 0) {
-        QueryPerformanceFrequency(&freq);
-        timeBeginPeriod(1);              /* 1 ms Sleep granularity */
-    }
-    hz = g_pc.fps_cap < 0 ? 0 : g_pc.fps_cap;   /* settings menu, live */
-    if (!hz || s_vsync_paces)
-        return;
-    QueryPerformanceCounter(&now);
-    if (!next.QuadPart || now.QuadPart - next.QuadPart > freq.QuadPart / 4) {
-        next.QuadPart = now.QuadPart;   /* first frame, or far behind: resync */
-    }
-    next.QuadPart += freq.QuadPart / hz;
+static void pace_init(void)
+{
+    if (!s_pace_freq.QuadPart) { QueryPerformanceFrequency(&s_pace_freq); timeBeginPeriod(1); }
+}
+
+/* Wait until QPC time t (Sleep while more than 2 ms remain, then spin). */
+static void pace_wait_until(LONGLONG t)
+{
+    LARGE_INTEGER now;
+    pace_init();
     for (;;) {
         LONGLONG left;
         QueryPerformanceCounter(&now);
-        left = next.QuadPart - now.QuadPart;
-        if (left <= 0)
+        left = t - now.QuadPart;
+        if (left <= 0 || left > s_pace_freq.QuadPart / 4)
             break;
-        if (left > freq.QuadPart / 500)  /* more than 2 ms: sleep, else spin */
+        if (left > s_pace_freq.QuadPart / 500)
             Sleep(1);
     }
+}
+
+/* The next point of the game's 1/60 s grid: this flip's deadline. */
+static LONGLONG pace_next(void)
+{
+    LARGE_INTEGER now;
+    int hz = g_pc.fps_cap > 0 ? g_pc.fps_cap : 60;
+    pace_init();
+    QueryPerformanceCounter(&now);
+    if (!s_pace_next.QuadPart || now.QuadPart - s_pace_next.QuadPart > s_pace_freq.QuadPart / 4)
+        s_pace_next.QuadPart = now.QuadPart;   /* first frame, or far behind: resync */
+    s_pace_next.QuadPart += s_pace_freq.QuadPart / hz;
+    return s_pace_next.QuadPart;
+}
+
+static void pace_flip(void)
+{
+    if (s_ip_paced) { s_ip_paced = 0; return; }   /* the in-between pictures waited already */
+    if (g_pc.fps_cap <= 0 || s_vsync_paces)
+        return;
+    pace_wait_until(pace_next());
 }
 
 /* Settings menu changes, applied live (g_pc, pc_settings.c). */
@@ -5118,14 +5214,17 @@ static void pace_note(int hz)
 {
     static int last = -1;
     int now = s_vsync_paces ? (int)s_sync_interval : 0;
-    int key = now * 100000 + hz * 100 + g_pc.fps_cap + (g_pc.vsync ? 50000000 : 0);
+    int key = now * 100000 + hz * 100 + g_pc.fps_cap + (g_pc.vsync ? 50000000 : 0) + g_pc.frame_rate * 1000000;
     if (key == last) return;
     last = key;
     if (s_vsync_paces)
-        fprintf(stderr, "[PACE] monitor %d Hz, cap %d: vsync paces (every %u refreshes)\n", hz, g_pc.fps_cap, s_sync_interval);
+        fprintf(stderr, "[PACE] monitor %d Hz, game %d, frame rate %d: vsync paces (every %u refreshes)\n", hz, g_pc.fps_cap,
+                g_pc.frame_rate, s_sync_interval);
     else
-        fprintf(stderr, "[PACE] monitor %d Hz, cap %d, vsync %s: the timer paces\n", hz, g_pc.fps_cap,
-                g_pc.vsync ? (s_vsync_fast ? "on but too fast" : "on") : "off");
+        fprintf(stderr, "[PACE] monitor %d Hz, game %d, frame rate %d%s, vsync %s%s: the timer paces\n", hz, g_pc.fps_cap,
+                g_pc.frame_rate, g_pc.frame_rate ? "" : " (unlimited)",
+                g_pc.vsync ? (s_vsync_fast ? "on but too fast" : "on") : "off",
+                ip_on() ? ", in-between pictures on" : "");
 }
 
 static void vsync_guard(void)
@@ -5165,22 +5264,16 @@ static void choose_sync(void)
                 && EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
             hz = (int)dm.dmDisplayFrequency;
     }
+    s_mon_hz = hz;
     s_vsync_paces = 0; s_sync_interval = 0;
     s_ip_vs = 0;
     if (!g_pc.vsync) { pace_note(hz); return; }
-    if (ip_on()) {
-        /* Interpolation prototype: on a screen at twice the cap each picture
-         * is shown for one refresh, and Present's wait for the screen keeps
-         * the game at the cap, so nothing waits half a frame on this thread.
-         * Otherwise the timer paces both pictures. */
-        int k = g_pc.fps_cap > 0 ? (hz + g_pc.fps_cap) / (2 * g_pc.fps_cap) : 0;
-        if (k >= 1 && k <= 2 && !s_vsync_fast && abs(hz - 2 * k * g_pc.fps_cap) <= k) {
-            s_vsync_paces = 1; s_sync_interval = (UINT)(2 * k);
-            pace_note(hz);
-            s_sync_interval = s_ip_iv * (UINT)k;   /* 240 Hz: two refreshes a picture */
-            s_ip_vs = 1;
-        } else
-            pace_note(hz);
+    if (ip_on() || g_pc.frame_rate == 30) {
+        /* Above 60 (in-between pictures, ip_show_between) and at 30 (every
+         * other frame shown) the timer keeps the game on its 1/60 s grid and
+         * each picture waits for one refresh. */
+        s_sync_interval = 1;
+        pace_note(hz);
         return;
     }
     s_sync_interval = 1;
@@ -5424,7 +5517,12 @@ static void present_rt(RenderTarget *r, int shot, int wide)
     {
         static int no_block = -1;   /* test only: a monitor whose vsync does not hold the game (#7) */
         if (no_block < 0) { const char *e = getenv("OOGIE_TEST_VSYNC_NOBLOCK"); no_block = e && *e == '1'; }
-        HRESULT hr = IDXGISwapChain_Present(s_swap, (no_block && s_vsync_paces) ? 0 : s_sync_interval, 0);
+        UINT iv = (no_block && s_vsync_paces) ? 0 : s_sync_interval;
+        HRESULT hr;
+        swap_wait();
+        hr = IDXGISwapChain_Present(s_swap, iv, (iv == 0 && s_tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        s_lat_waited = 0;
+        InterlockedIncrement(&s_pictures);
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             /* The graphics driver stopped (it crashed and Windows reset it,
              * it was updated, or the GPU was switched). Every D3D call fails
@@ -5573,14 +5671,89 @@ static int ipg_buf(ID3D11Buffer **b, ID3D11ShaderResourceView **srv, UINT *have,
     return 1;
 }
 
-/* This frame to the GPU. prev: the frame before (matches set), a: blend. */
+/* Is a matched pair safe to blend? Test 1 (owner, RTX 4090 at 165 Hz: "black
+ * lines coming down from Jack", "textures shooting out from the model"): a
+ * pair is wrong when the two draws are not the same model in the same vertex
+ * order, and blending them pulls vertices across the screen. The pair keeps
+ * everything but the positions from frame to frame (probe ip3: colours and
+ * texture coordinates almost never change), so those are compared at up to 8
+ * vertices; and bone matrices (c12 up) whose rotation part flips are not
+ * blended (a bone palette that changed hands). OOGIE_INTERP_GUARD=0: off. */
+static struct { uint32_t pairs, bad_attr, bad_bones; } s_ipguard;
+static int s_ipguard_why;                /* last refusal: 1 attributes, 2 bones (OOGIE_INTERP_DUMP) */
+static int ip_guard_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OOGIE_INTERP_GUARD"); on = !(e && *e == '0'); }
+    return on;
+}
+static int ip_consts_close(const float *p, const float *c)
+{
+    int i, k;
+    for (i = 12; i < 192; i++)
+        for (k = 0; k < 3; k++) {
+            float a = p[i * 4 + k], b = c[i * 4 + k], d = fabsf(a - b), m = fmaxf(fabsf(a), fabsf(b));
+            if (d > 0.3f && d > 0.75f * m && m < 4.0f) return 0;   /* a rotation-sized value that swung */
+        }
+    return 1;
+}
+static uint32_t s_ipmemo_c = ~0u, s_ipmemo_p = ~0u;   /* reset by ipg_upload */
+static int s_ipmemo_ok;
+static int ip_pair_ok(const IpFrame *cur, const IpRec *c, const IpFrame *prev, const IpRec *pr)
+{
+    uint32_t n = c->b.nverts, ni = c->b.ninputs, s, v;
+    s_ipguard.pairs++;
+    if (!ip_guard_on()) return 1;
+    if (ni > 1 && n) {
+        const float *ci = (const float *)(cur->d + c->i_off), *pi = (const float *)(prev->d + pr->i_off);
+        size_t skip = (c->b.input_mask & 1) ? 4 : 0;          /* position: input 0, allowed to move */
+        for (s = 0; s < 8; s++) {
+            v = n > 1 ? (uint32_t)((uint64_t)s * (n - 1) / 7) : 0;
+            if (memcmp(ci + (size_t)v * ni * 4 + skip, pi + (size_t)v * ni * 4 + skip, (ni * 4 - skip) * 4)) {
+                s_ipguard.bad_attr++;
+                s_ipguard_why = 1;
+                return 0;
+            }
+        }
+    }
+    {   /* the bone check refused 45% of chapter 1's pairs (effect constants
+         * move a lot too, sw1), so it is a test switch: OOGIE_INTERP_BONES=1 */
+        static int bones = -1;
+        if (bones < 0) { const char *e = getenv("OOGIE_INTERP_BONES"); bones = e && *e == '1'; }
+        if (!bones) return 1;
+    }
+    if (s_ipmemo_c != c->vc_i || s_ipmemo_p != pr->vc_i) {
+        s_ipmemo_c = c->vc_i; s_ipmemo_p = pr->vc_i;
+        s_ipmemo_ok = ip_consts_close((const float *)(prev->d + pr->vc_off), (const float *)(cur->d + c->vc_off));
+    }
+    if (!s_ipmemo_ok) { s_ipguard.bad_bones++; s_ipguard_why = 2; }
+    return s_ipmemo_ok;
+}
+
+/* This frame to the GPU. prev: the frame before (matches set). The place
+ * between the two frames is per picture (b4, ipa_set), not stored here. */
 static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int blend)
 {
     D3D11_MAPPED_SUBRESOURCE m;
     uint32_t i, nd = 0;
+    int dump;
     size_t need;
     unsigned char *p;
     g->ok = 0;
+    s_ipmemo_c = s_ipmemo_p = ~0u;
+    (void)a;
+    {   /* test: logs\ipdump.flag present (with OOGIE_INTERP_DUMP=1): every draw of the next 2 uploads with its pairing and state */
+        static int on = -1, left;
+        static long cnt;
+        if (on < 0) { const char *e = getenv("OOGIE_INTERP_DUMP"); on = e && *e == '1'; }
+        cnt++;
+        if (on && !left && blend && GetFileAttributesA("logs\\ipdump.flag") != INVALID_FILE_ATTRIBUTES) {
+            DeleteFileA("logs\\ipdump.flag");
+            left = 2;
+        }
+        dump = left > 0;
+        if (dump) { left--; fprintf(stderr, "[IPDUMP] upload %ld: %u records\n", cnt, cur->n); }
+    }
     for (i = 0; i < cur->n; i++)
         if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) cur->r[i].cb_i = nd++;
     if (!ipg_buf(&g->data, &g->srv, &g->dsize, cur->dn + 16, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_INDEX_BUFFER))
@@ -5611,20 +5784,49 @@ static int ipg_upload(IpFrame *cur, IpGpu *g, const IpFrame *prev, float a, int 
         if (blend && c->match >= 0) {
             const IpRec *pr = &prev->r[c->match];
             if (pr->vsh_i == c->vsh_i && pr->b.nverts == c->b.nverts && pr->b.ninputs == c->b.ninputs
-                && pr->b.input_mask == c->b.input_mask) {
-                ip[0] = (float)(pr->i_off / 16); ip[1] = a; ip[2] = 1;
+                && pr->b.input_mask == c->b.input_mask && ip_pair_ok(cur, c, prev, pr)) {
+                ip[0] = (float)(pr->i_off / 16); ip[1] = 1; ip[2] = 1;
             }
         }
         memcpy(blk + IPG_CONSTS_BYTES, ip, sizeof ip);
+        if (dump) {
+            const Nv2aRenderState *s = &c->rs;
+            fprintf(stderr, "[IPDUMP] %u key %016llX match %d blend %d why %d nv %u ni %u mask %X src %08X/%u vc %u"
+                            " z %u/%X/%u st %u/%X/%X/%X%X%X bl %u %X/%X cm %08X tex %08X rt %08X cull %p\n",
+                    i, (unsigned long long)c->key, c->match, ip[2] > 0, ip[2] > 0 ? 0 : (c->match >= 0 ? s_ipguard_why : 0),
+                    c->b.nverts, c->b.ninputs, c->b.input_mask, c->b.src_addr, c->b.src_first, c->vc_i,
+                    s->depth_test_enable, s->depth_func, s->depth_write,
+                    s->stencil_enable, s->stencil_func, s->stencil_ref, s->stencil_fail, s->stencil_zfail, s->stencil_zpass,
+                    s->blend_enable, s->blend_src, s->blend_dst, s->color_mask,
+                    c->has_tex ? c->tex.offset : 0, c->rt ? c->rt->key : 0, (void *)c->rst);
+        }
+        s_ipguard_why = 0;
     }
     ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)g->cb, 0);
     g->ok = 1;
     return 1;
 }
 
+/* b4 of the replay programs: where this picture sits between the frames (0 the
+ * frame before, 1 this one). */
+static ID3D11Buffer *s_ipa_cb;
+static int ipa_set(float a)
+{
+    float v[4] = { a, 0, 0, 0 };
+    if (!s_ipa_cb) {
+        D3D11_BUFFER_DESC bd;
+        memset(&bd, 0, sizeof bd);
+        bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (FAILED(ID3D11Device_CreateBuffer(s_dev, &bd, NULL, &s_ipa_cb))) { s_ipa_cb = NULL; return 0; }
+    }
+    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_ipa_cb, 0, NULL, v, 0, 0);
+    return 1;
+}
+
 /* The in-between picture from the GPU copies of this frame and the last. */
 static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu *pg)
 {
+    ID3D11RasterizerState *lrst = NULL;
     RenderTarget *lrt = NULL; DepthTarget *ldt = NULL;
     ID3D11PixelShader *lps = NULL; ID3D11VertexShader *lvs = NULL;
     ID3D11ShaderResourceView *lsrv[4] = { NULL, NULL, NULL, NULL };
@@ -5664,9 +5866,9 @@ static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu 
                 ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
                 ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 ID3D11DeviceContext_IASetIndexBuffer(s_ctx, g->data, DXGI_FORMAT_R32_UINT, 0);
-                ID3D11DeviceContext_RSSetState(s_ctx, s_rs);
                 ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 2, in);
-                lrt = NULL; ldt = NULL; lps = NULL; lvs = NULL; lbs = NULL; ldss = NULL;
+                ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 4, 1, &s_ipa_cb);
+                lrt = NULL; ldt = NULL; lps = NULL; lvs = NULL; lbs = NULL; ldss = NULL; lrst = NULL;
                 memset(lsrv, 0, sizeof lsrv); memset(lsmp, 0, sizeof lsmp);
                 base = 0; have = 1;
             }
@@ -5681,6 +5883,7 @@ static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu 
                 ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
                 lrt = c->rt; ldt = c->dt;
             }
+            if (c->rst != lrst) { ID3D11DeviceContext_RSSetState(s_ctx, c->rst ? c->rst : s_rs); lrst = c->rst; }
             if (c->ps != lps) { ID3D11DeviceContext_PSSetShader(s_ctx, c->ps, NULL, 0); lps = c->ps; }
             if (vs != lvs) { ID3D11DeviceContext_VSSetShader(s_ctx, vs, NULL, 0); lvs = vs; }
             if (memcmp(c->srv, lsrv, sizeof lsrv)) {
@@ -5723,6 +5926,7 @@ static void ipg_replay(IpFrame *cur, const IpFrame *prev, IpGpu *g, const IpGpu 
         ID3D11ShaderResourceView *in[2];
         in[0] = s_ring_vin.srv; in[1] = NULL;
         ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 0, 4, nb);
+        ID3D11DeviceContext_VSSetConstantBuffers(s_ctx, 4, 1, nb);
         ID3D11DeviceContext_PSSetConstantBuffers(s_ctx, 0, 1, nb);
         ID3D11DeviceContext_VSSetShaderResources(s_ctx, 8, 2, in);
         ID3D11DeviceContext_IASetIndexBuffer(s_ctx, NULL, DXGI_FORMAT_R32_UINT, 0);
@@ -5733,71 +5937,27 @@ static ID3D11Texture2D *s_ip_save;
 static D3D11_TEXTURE2D_DESC s_ip_sd;
 static LARGE_INTEGER s_ip_last_real;
 static uint32_t s_ip_gen;                /* flips since start (ip_flip_end) */
-static struct { uint32_t flips, shown, few, skipped; double matched; LONGLONG t_game, t_match, t_upload, t_replay, t_present, t_wait; double mb; } s_ipst;
+static struct { uint32_t flips, shown, few, skipped, pics, tried; double matched; LONGLONG t_game, t_match, t_upload, t_replay, t_present, t_wait; double mb; } s_ipst;
 
-/* Show the picture halfway between the last frame and this one, then wait
- * half a frame; the caller shows the real frame. Returns 1 if shown. */
-static int ip_wait(void)
+/* Pictures a second the player asked for (Frame Rate, 0 unlimited), held to
+ * the monitor's refresh rate when vsync is on. */
+static int ip_rate(void)
 {
-    static int w = -1;
-    if (w < 0) { const char *e = getenv("OOGIE_INTERP_WAIT"); w = !(e && *e == '0'); }
-    return w;
+    int f = g_pc.frame_rate;
+    if (g_pc.vsync && s_mon_hz > 0 && (f == 0 || f > s_mon_hz)) f = s_mon_hz;
+    return f;
 }
 
-static int ip_show_between(RenderTarget *r)
+/* One in-between picture at place a (0 the frame before, 1 this frame). */
+static void ip_replay_at(IpFrame *cur, IpFrame *prev, IpGpu *pg, int gpu, float a)
 {
     static float (*cblend)[4]; static float *iblend; static size_t ciblend;
-    IpFrame *cur = &s_ipf[s_ipf_cur], *prev = &s_ipf[s_ipf_cur ^ 1];
-    uint32_t nc = 0, i, matched = 0;
-    int gpu, few;
-    LONGLONG up = 0;
-    IpGpu *pg;
-    D3D11_TEXTURE2D_DESC td;
-    LARGE_INTEGER freq, now;
-    const float a = 0.5f;
-
-    LARGE_INTEGER t0 = ip_now(), t1;
-    s_ipst.flips++;
-    if (s_ip_last_real.QuadPart) s_ipst.t_game += t0.QuadPart - s_ip_last_real.QuadPart;   /* the game's frame, recording included */
-    {   /* test: OOGIE_INTERP_SHOW=0 records but shows nothing (the game's frame time without the extra picture) */
-        static int show = -1;
-        if (show < 0) { const char *e = getenv("OOGIE_INTERP_SHOW"); show = !(e && *e == '0'); }
-        if (!show) { s_ipst.skipped++; return 0; }
-    }
-    s_ipst.mb += cur->dn / 1048576.0;
-    if (!cur->n || cur->bad) { s_ipst.skipped++; return 0; }
-    gpu = ipg_avail();
-    for (i = 0; i < cur->n; i++)          /* matched while recording (ipt_find) */
-        if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) { nc++; if (cur->r[i].match >= 0) matched++; }
-    if (!prev->n || prev->bad) matched = 0;
-    few = !nc || matched * 10 < nc * 8;   /* a cut or a new scene: no blending */
-    pg = &s_ipg[s_ipf_cur ^ 1];
-    if (gpu) {
-        LARGE_INTEGER tu = ip_now();
-        ipg_upload(cur, &s_ipg[s_ipf_cur], prev, a, !few && pg->ok);
-        up = ip_now().QuadPart - tu.QuadPart;
-        s_ipst.t_upload += up;
-        if (!s_ipg[s_ipf_cur].ok || !pg->ok) { s_ipst.skipped++; return 0; }
-    }
-    if (!r || r == &s_snap || !r->tex || !prev->n || prev->bad) { s_ipst.skipped++; return 0; }
-    if (few) { s_ipst.few++; return 0; }
-    s_ipst.matched += (double)matched / nc;
-    t1 = ip_now(); s_ipst.t_match += t1.QuadPart - t0.QuadPart - up; t0 = t1;   /* the upload counted on its own */
-
-    ID3D11Texture2D_GetDesc(r->tex, &td);
-    if (!s_ip_save || memcmp(&td, &s_ip_sd, sizeof td)) {
-        if (s_ip_save) ID3D11Texture2D_Release(s_ip_save);
-        s_ip_save = NULL;
-        s_ip_sd = td;
-        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ip_save))) { s_ip_save = NULL; return 0; }
-    }
-    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ip_save, (ID3D11Resource *)r->tex);
-    if (!cblend) cblend = (float (*)[4])malloc(sizeof(VshConsts));
-
+    uint32_t i;
     s_rp_replay = 1;
-    if (gpu)
+    if (gpu) {
+        ipa_set(a);
         ipg_replay(cur, prev, &s_ipg[s_ipf_cur], pg);
-    else for (i = 0; i < cur->n; i++) {
+    } else for (i = 0; i < cur->n; i++) {
         IpRec *c = &cur->r[i];
         s_rp_live = &c->live;
         if (c->type == IPR_CLEAR) {
@@ -5814,10 +5974,12 @@ static int ip_show_between(RenderTarget *r)
         } else if (c->cap_ok == 2) {
             OogieVshBatch b = c->b;
             const VshConsts *vc = (const VshConsts *)(cur->d + c->vc_off);
+            if (!cblend) cblend = (float (*)[4])malloc(sizeof(VshConsts));
             b.inputs = (const float *)(cur->d + c->i_off);
             if (c->match >= 0 && cblend) {
                 IpRec *pr = &prev->r[c->match];
-                if (pr->b.nverts == b.nverts && pr->b.ninputs == b.ninputs && pr->b.input_mask == b.input_mask) {
+                if (pr->b.nverts == b.nverts && pr->b.ninputs == b.ninputs && pr->b.input_mask == b.input_mask
+                    && ip_pair_ok(cur, c, prev, pr)) {
                     const float *pc = (const float *)(prev->d + pr->vc_off), *cc = (const float *)vc;
                     uint32_t k;
                     memcpy(cblend, vc, sizeof *vc);
@@ -5845,32 +6007,117 @@ static int ip_show_between(RenderTarget *r)
     }
     s_rp_live = NULL;
     s_rp_replay = 0;
-    t1 = ip_now(); s_ipst.t_replay += t1.QuadPart - t0.QuadPart; t0 = t1;
+}
 
-    s_ip_iv = 1;
+/* In-between pictures for this flip, then the caller shows the real frame.
+ *
+ * Owner's test 1 (2026-11-07, RTX 4090, 165 Hz): the old version made one
+ * picture exactly halfway and waited half a frame, which only suits 120 Hz.
+ * Now each picture is placed by the time it is shown: the real frames sit on
+ * the game's 1/60 s grid (frame N-1 at S, frame N at D = S + 1/60), and a
+ * picture shown at time t is the blend at (t - S) * 60. Pictures follow the
+ * monitor's refreshes (vsync) or the chosen Frame Rate (timer), so any rate
+ * works: 120, 144, 165, 240, unlimited. While the game computes its next
+ * frame no picture can be made, and the real frame stays on screen; motion
+ * stays correct because every picture is placed by its own time.
+ * Returns 1 if at least one picture was shown. The 1/60 s wait is done here
+ * (s_ip_paced), so pace_flip does not wait again. */
+static int ip_show_between(RenderTarget *r)
+{
+    IpFrame *cur = &s_ipf[s_ipf_cur], *prev = &s_ipf[s_ipf_cur ^ 1];
+    uint32_t nc = 0, i, matched = 0;
+    int gpu, few, shots, n = 0, rate;
+    LONGLONG up = 0, P, D, S, gap, R, last = 0;
+    IpGpu *pg;
+    D3D11_TEXTURE2D_DESC td;
+    LARGE_INTEGER freq, now;
+
+    LARGE_INTEGER t0 = ip_now(), t1;
+    s_ipst.flips++;
+    if (s_ip_last_real.QuadPart) s_ipst.t_game += t0.QuadPart - s_ip_last_real.QuadPart;   /* the game's frame, recording included */
+    {   /* test: OOGIE_INTERP_SHOW=0 records but shows nothing (the game's frame time without the extra picture) */
+        static int show = -1;
+        if (show < 0) { const char *e = getenv("OOGIE_INTERP_SHOW"); show = !(e && *e == '0'); }
+        if (!show) { s_ipst.skipped++; return 0; }
+    }
+    s_ipst.mb += cur->dn / 1048576.0;
+    if (!cur->n || cur->bad) { s_ipst.skipped++; return 0; }
+    gpu = ipg_avail();
+    for (i = 0; i < cur->n; i++)          /* matched while recording (ipt_find) */
+        if (cur->r[i].type == IPR_VSH && cur->r[i].cap_ok == 2) { nc++; if (cur->r[i].match >= 0) matched++; }
+    if (!prev->n || prev->bad) matched = 0;
+    few = !nc || matched * 10 < nc * 8;   /* a cut or a new scene: no blending */
+    pg = &s_ipg[s_ipf_cur ^ 1];
+    if (gpu) {
+        LARGE_INTEGER tu = ip_now();
+        ipg_upload(cur, &s_ipg[s_ipf_cur], prev, 1.0f, !few && pg->ok);
+        up = ip_now().QuadPart - tu.QuadPart;
+        s_ipst.t_upload += up;
+        if (!s_ipg[s_ipf_cur].ok || !pg->ok) { s_ipst.skipped++; return 0; }
+    }
+    if (!r || r == &s_snap || !r->tex || !prev->n || prev->bad) { s_ipst.skipped++; return 0; }
+    if (few) { s_ipst.few++; return 0; }
+    if (g_pc.fps_cap <= 0) { s_ipst.skipped++; return 0; }
+    s_ipst.matched += (double)matched / nc;
+    s_ipst.tried++;
+    t1 = ip_now(); s_ipst.t_match += t1.QuadPart - t0.QuadPart - up; t0 = t1;   /* the upload counted on its own */
+
+    ID3D11Texture2D_GetDesc(r->tex, &td);
+    if (!s_ip_save || memcmp(&td, &s_ip_sd, sizeof td)) {
+        if (s_ip_save) ID3D11Texture2D_Release(s_ip_save);
+        s_ip_save = NULL;
+        s_ip_sd = td;
+        if (FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_ip_save))) { s_ip_save = NULL; return 0; }
+    }
+    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)s_ip_save, (ID3D11Resource *)r->tex);
+
     {   /* mode 2: these are the frames saved and captured; test: OOGIE_INTERP_SHOTS=1 saves them too, between the real ones */
-        static int shots = -1;
-        if (shots < 0) { const char *e = getenv("OOGIE_INTERP_SHOTS"); shots = e && *e == '1'; }
-        present_rt(r, ip_on() == 2 || shots, s_shown_wide);
+        static int sh = -1;
+        if (sh < 0) { const char *e = getenv("OOGIE_INTERP_SHOTS"); sh = e && *e == '1'; }
+        shots = ip_on() == 2 || sh;
     }
-    ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->tex, (ID3D11Resource *)s_ip_save);
-    s_ipst.shown++;
-    t1 = ip_now(); s_ipst.t_present += t1.QuadPart - t0.QuadPart; t0 = t1;
-    /* The real frame half a frame after this picture. Timing it from the
-     * last real frame (1.5 frames) made every frame 25 ms: the game ran at
-     * 40 fps, in slow motion (ipA/ipB). pace_flip keeps the 1/60 s grid. */
     QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&now);
-    if (g_pc.fps_cap > 0 && ip_wait() && !s_ip_vs) {
-        LONGLONG due = now.QuadPart + freq.QuadPart / (2 * g_pc.fps_cap);
-        for (;;) {
-            QueryPerformanceCounter(&now);
-            if (now.QuadPart >= due || due - now.QuadPart > freq.QuadPart / 10) break;
-            if (due - now.QuadPart > freq.QuadPart / 500) Sleep(1);
+    rate = ip_rate();
+    P = freq.QuadPart / g_pc.fps_cap;
+    D = pace_next();                      /* the real frame's place on the grid */
+    S = D - P;
+    s_ip_paced = 1;
+    gap = rate > 0 ? freq.QuadPart / rate : 0;
+    R = freq.QuadPart / (s_mon_hz > 0 ? s_mon_hz : 60);
+    for (n = 0; n < 32; ) {
+        LONGLONG t;
+        float a;
+        if (gap && last) pace_wait_until(last + gap);
+        if (g_pc.vsync) swap_wait();          /* the next refresh */
+        QueryPerformanceCounter(&now);
+        t = now.QuadPart;
+        if (g_pc.vsync ? D - t < R / 2 : D - t < (gap ? gap / 2 : freq.QuadPart / 2000))
+            break;                            /* the real frame's turn */
+        a = (float)(t - S) / (float)P;
+        if (a < 0.01f) a = 0.01f;
+        if (a > 0.99f) a = 0.99f;
+        {   /* test: OOGIE_INTERP_ALPHA=<0..1> places every picture there */
+            static float fa = -2.0f;
+            if (fa == -2.0f) { const char *e = getenv("OOGIE_INTERP_ALPHA"); fa = e && *e ? (float)atof(e) : -1.0f; }
+            if (fa >= 0.0f) a = fa;
         }
+        t1 = ip_now(); s_ipst.t_wait += t1.QuadPart - t0.QuadPart; t0 = t1;
+        ip_replay_at(cur, prev, pg, gpu, a);
+        t1 = ip_now(); s_ipst.t_replay += t1.QuadPart - t0.QuadPart; t0 = t1;
+        s_ip_iv = 1;
+        present_rt(r, shots, s_shown_wide);
+        t1 = ip_now(); s_ipst.t_present += t1.QuadPart - t0.QuadPart; t0 = t1;
+        last = t;
+        n++;
     }
+    if (n) {
+        ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)r->tex, (ID3D11Resource *)s_ip_save);
+        s_ipst.shown++;
+        s_ipst.pics += n;
+    }
+    if (!g_pc.vsync) pace_wait_until(D);     /* the real frame on the grid */
     s_ipst.t_wait += ip_now().QuadPart - t0.QuadPart;
-    return 1;
+    return n > 0;
 }
 
 static void ip_flip_end(void)
@@ -5885,10 +6132,14 @@ static void ip_flip_end(void)
         double ms, n = s_ipst.flips ? (double)s_ipst.flips : 1.0;
         QueryPerformanceFrequency(&f);
         ms = 1000.0 / (double)f.QuadPart / n;
-        fprintf(stderr, "[INTERP] %u flips: %u in-between pictures shown, %u without (few matches), %u skipped; matched %.1f%%;"
+        fprintf(stderr, "[INTERP] %u flips: %u with in-between pictures (%u pictures, %.1f a flip), %u without (few matches), %u skipped; matched %.1f%%;"
+                        " pairs %u, not blended: %u by attributes, %u by bones;"
                         " per flip: game %.2f ms, record %.2f ms, match %.2f ms, upload %.2f ms, replay %.2f ms, present %.2f ms, wait %.2f ms, %.1f MB recorded\n",
-                s_ipst.flips, s_ipst.shown, s_ipst.few, s_ipst.skipped, s_ipst.shown ? 100.0 * s_ipst.matched / s_ipst.shown : 0.0,
+                s_ipst.flips, s_ipst.shown, s_ipst.pics, s_ipst.shown ? (double)s_ipst.pics / s_ipst.shown : 0.0,
+                s_ipst.few, s_ipst.skipped, s_ipst.tried ? 100.0 * s_ipst.matched / s_ipst.tried : 0.0,
+                s_ipguard.pairs, s_ipguard.bad_attr, s_ipguard.bad_bones,
                 s_ipst.t_game * ms, s_ip_t_rec * ms, s_ipst.t_match * ms, s_ipst.t_upload * ms, s_ipst.t_replay * ms, s_ipst.t_present * ms, s_ipst.t_wait * ms, s_ipst.mb / n);
+        memset(&s_ipguard, 0, sizeof s_ipguard);
         s_ip_t_rec = 0;
         memset(&s_ipst, 0, sizeof s_ipst);
         t = now;
@@ -5910,6 +6161,22 @@ static void ip_flip_end(void)
     s_ipf[s_ipf_cur].bad = 0;
     s_ipg[s_ipf_cur].ok = 0;
     s_ipt_gen[s_ipf_cur]++;
+}
+
+/* At each flip: in-between pictures on when the Frame Rate is above the
+ * game's 60 (or Unlimited) and the screen can show more than 60 (vsync on a
+ * 60 Hz monitor: no point recording). Both recorded frames are emptied on a
+ * change, so nothing is blended against a stale frame. */
+static void ip_update(void)
+{
+    int want = (g_pc.frame_rate == 0 || g_pc.frame_rate > g_pc.fps_cap) && g_pc.fps_cap > 0
+               && !(g_pc.vsync && s_mon_hz > 0 && s_mon_hz <= g_pc.fps_cap + 2);
+    if (want == s_ip_live) return;
+    s_ip_live = want;
+    ip_flip_end();
+    ip_flip_end();
+    fprintf(stderr, "[INTERP] in-between pictures %s (frame rate %d, monitor %d Hz, vsync %s)\n",
+            want ? "on" : "off", g_pc.frame_rate, s_mon_hz, g_pc.vsync ? "on" : "off");
 }
 
 static void be_flip(void)
@@ -6041,12 +6308,19 @@ static void be_flip(void)
         ptrace_frame();
     apply_config();
     if (r) {
-        int between = 0;
+        int between = 0, skip = 0;
         s_shown_wide = wide_frame();
         if (ip_on())
             between = ip_show_between(r);
-        s_ip_iv = between ? 1 : 2;        /* vsync pacing: alone, the real frame takes both refreshes */
-        if (!(ip_on() == 2 && between))
+        s_ip_iv = between ? 1 : 2;
+        if (g_pc.frame_rate == 30 && !ip_on()) {
+            /* Frame Rate 30: the game still steps 60 times a second (its
+             * speed is per frame); every other frame is shown. */
+            static int odd;
+            odd ^= 1;
+            skip = odd;
+        }
+        if (!(ip_on() == 2 && between) && !skip)
             present_rt(r, 1, s_shown_wide);
         InterlockedIncrement(&g_oogie_presents);
         s_shown_rt = r;
@@ -6055,6 +6329,7 @@ static void be_flip(void)
     }
     if (ip_on())
         ip_flip_end();
+    ip_update();
     pace_flip();
     auto_scale_tick();
     tex_stats_tick();
@@ -6177,11 +6452,23 @@ static void be_flip(void)
     }
     keys_sync();
     {
-        /* Frame-rate counter: frames over the last half second. */
-        static DWORD t0; static uint32_t f0;
+        /* Frame-rate counter: pictures shown over the last half second (with
+         * in-between pictures more than the game's 60 frames). */
+        static DWORD t0; static LONG f0;
         DWORD now = GetTickCount();
-        if (!t0) { t0 = now; f0 = s_frame; }
-        if (now - t0 >= 500) { s_fps_shown = (float)(s_frame - f0) * 1000.0f / (float)(now - t0); t0 = now; f0 = s_frame; }
+        LONG pics = s_pictures;
+        if (!t0) { t0 = now; f0 = pics; }
+        if (now - t0 >= 500) { s_fps_shown = (float)(pics - f0) * 1000.0f / (float)(now - t0); t0 = now; f0 = pics; }
+        {   /* every 5 s in the log: pictures and game frames a second (players' reports) */
+            static DWORD l0; static LONG p0; static uint32_t g0;
+            if (!l0) { l0 = now; p0 = pics; g0 = s_frame; }
+            if (now - l0 >= 5000) {
+                double sec = (now - l0) / 1000.0;
+                fprintf(stderr, "[FPS] %.1f pictures a second, game %.1f frames a second (frame rate %d, monitor %d Hz, vsync %s)\n",
+                        (pics - p0) / sec, (s_frame - g0) / sec, g_pc.frame_rate, s_mon_hz, g_pc.vsync ? "on" : "off");
+                l0 = now; p0 = pics; g0 = s_frame;
+            }
+        }
     }
     {
         /* OOGIE_FRAME_LOG=1: one line per presented frame -- draws, draws into

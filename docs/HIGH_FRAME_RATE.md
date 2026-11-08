@@ -1,8 +1,8 @@
 # High frame rate: findings and plan (2026-11-01)
 
-Status (2026-11-07): published as a test only, "0.3.0 High Frame Rate test 1", from the branch
-high-frame-rate, for the owner to try on a high refresh screen. It goes into a main release only after the
-owner confirms it. F1 > Display > High Frame Rate (Test), settings.ini high_frame_rate (OOGIE_INTERP).
+Status (2026-11-07 night): "0.3.0 High Frame Rate test 2" on the branch high-frame-rate, for the owner to try
+on the 165 Hz desktop. One setting, F1 > Display > Frame Rate (settings.ini `frame_rate`: 30, 60, 120, 144,
+165, 240, 360, 0 unlimited), with Vertical Sync. Goes into a main release only after the owner confirms it.
 
 ## Why the cap cannot simply be raised
 
@@ -95,3 +95,35 @@ local effect timers, not read yet).
 - The flicker detector counted the replay's own clear as a broken frame (200 reports a run); it is off while
   this feature is on.
 - Laptop (60 Hz): with it on 38-60 fps (6 chapters, 1 min each), no crashes; off 54-60.
+
+## Test 2 (2026-11-07 night; TEST_RESULTS h2*, sw*, md_*, rs1)
+
+Owner's test 1 report (RTX 4090, 165 Hz, 4x render, PS2 HD pack): almost every texture flickering, see-through
+characters including Jack, black lines from Jack, textures shooting out; and the cap plus "High Frame Rate
+(Test)" settings were confusing.
+
+- **Root cause, Verified (h2t1only, h2gpu0, h2guard0, sw*):** the text builder `sadd` dropped any piece longer
+  than the space left in its buffer (it only kept 512 bytes free). The replay variant's 600-character header
+  was dropped for vertex programs 6 and 7 (`replay variant of vertex program 6 failed: ... unexpected end of
+  file`, also in the owner's play.log), and `ipg_replay` skips draws whose variant failed, so those models were
+  missing from every in-between picture: Jack see-through (Chapter 1, test 1's exe) and gone (Chapter 12).
+  The CPU replay (OOGIE_INTERP_GPU=0) drew him. `sadd` now grows and writes the piece again. No live shader
+  ever hit it (no other compile error in the owner's or 60 test logs).
+- Screenshot bursts mislead: each BMP write stalls the game, and the pictures after the first one were not
+  representative (Jack present in pictures 2-5, missing in 1). Checks now save only the first picture.
+- **Also fixed:** the replay used one rasterizer state with no culling (`s_rs`); each record now keeps the live
+  draw's (`rs_for`). A pairing check skips blending a draw whose colours/texture coordinates differ from its
+  partner at 8 sampled vertices. A bone-matrix check refused 45% of chapter 1's pairs (effect constants) and is
+  off (OOGIE_INTERP_BONES=1).
+- **Pacing by time (any refresh rate):** real frames sit on the 1/60 s grid; each in-between picture is placed at
+  (t - S) x 60 from the time it is presented (b4 `ipa`, one GPU upload per frame for any number of pictures).
+  Pictures follow the refresh (flip-model swap chain, frame latency 1, waitable object `swap_wait`) or the
+  Frame Rate (timer); tearing allowed with vsync off. While the game computes its next frame (5.6-12 ms on the
+  laptop, ~7.8 ms on the owner's PC) no picture can be made.
+- **Measured (md_*, Chapter 17, laptop 60 Hz):** 60: 60/60. 30: 30 pictures, game 60 (every other frame shown;
+  the old 30 was half speed). 120 vsync off: 120 pictures, game 60. 165 vsync off: ~158. Unlimited vsync off:
+  ~250. 120 with vsync on at 60 Hz: in-between pictures off, 60. Resizing and maximising (rs1): no errors.
+- Not verified: a real high refresh screen, live switching in the menu, the PS2 HD pack with this build.
+- Next: if the hold while the game computes shows as judder at 144-240 Hz, make the in-between pictures ahead
+  of time and present them during the next frame's work (a presenter thread, or presents from the executor's
+  idle time).
