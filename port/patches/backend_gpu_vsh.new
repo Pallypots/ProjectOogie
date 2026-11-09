@@ -93,7 +93,20 @@ static int oogie_gpu_vsh_batch(void)
     b.nverts = n;
     b.ninputs = nin;
     b.input_mask = mask;
-    b.src_addr = (s_gpu.inline_active || !nin) ? 0 : s_gpu.attr[slot[0]].offset;
+    /* The first input read from an array in guest memory. A switched-off
+     * input (size or stride 0) keeps a stale offset that changed from frame
+     * to frame (2026-11-08: 00007FF7 / 000E037C alternating), so the high
+     * frame rate pairing saw new names every frame; such inputs are skipped,
+     * and a batch with no array at all gets 1 (not 0, which means inline). */
+    b.src_addr = 0;
+    if (!s_gpu.inline_active && nin) {
+        b.src_addr = 1;
+        for (k = 0; k < nin; k++)
+            if (s_gpu.attr[slot[k]].size && s_gpu.attr[slot[k]].stride && s_gpu.attr[slot[k]].offset) {
+                b.src_addr = s_gpu.attr[slot[k]].offset;
+                break;
+            }
+    }
     b.src_first = n ? s_gpu.idx[0] : 0;
     b.indices = s_gvsh_idx;
     b.nindices = ni;

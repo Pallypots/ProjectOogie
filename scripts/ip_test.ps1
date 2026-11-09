@@ -3,7 +3,7 @@
 # and [INTERP] cost lines plus the presents per second. Stops the game it started.
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\ip_test.ps1 -Name ipO -Chapter 3 -Cap 30 -Interp 1
 param([Parameter(Mandatory = $true)][string]$Name, [int]$Chapter = 3, [int]$Cap = 60, [string]$Interp = "1",
-      [int]$Seconds = 60, [string]$Env = "", [switch]$Shots, [switch]$Pan)   # -Shots: save a few frames (with OOGIE_INTERP_SHOTS=1 the in-between ones too) to logs\live\f*.bmp   # -Env "OOGIE_INTERP_WAIT=0;X=1"
+      [int]$Seconds = 60, [string]$Env = "", [switch]$Shots, [switch]$Pan, [int]$ShotMs = 250)   # -Shots: save a few frames (with OOGIE_INTERP_SHOTS=1 the in-between ones too) to logs\live\f*.bmp   # -Env "OOGIE_INTERP_WAIT=0;X=1"
 $Root = Split-Path -Parent $PSScriptRoot
 if (Get-Process oogie_recomp -ErrorAction SilentlyContinue) { "a game is already running; not starting"; exit 1 }
 $level = @{ 1 = '0000'; 2 = '0000'; 3 = '0100'; 4 = '0100'; 5 = '0100'; 6 = '0100'; 7 = '0200'; 10 = '0302'; 13 = '0[1-9]\d\d'; 15 = '0[1-9]\d\d'; 16 = '0500' }
@@ -22,7 +22,7 @@ while (((Get-Date) - $t0).TotalSeconds -lt $Seconds -and -not $p.HasExited) {
         $shot_done = 1
         Get-ChildItem (Join-Path $Root "logs\live") -Filter "f*.bmp" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^f\d+\.bmp$' } | Remove-Item
         if ($Pan) { Add-Content (Join-Path $Root "logs\pad_live.txt") "lleft:2000"; Start-Sleep -Milliseconds 700 }   # Jack running (the camera here is fixed; the right stick does not turn it)
-        $fl = Join-Path $Root "logs\flipdump.flag"; Set-Content $fl "1"; Start-Sleep -Milliseconds 250; Remove-Item $fl
+        $fl = Join-Path $Root "logs\flipdump.flag"; Set-Content $fl "1"; Start-Sleep -Milliseconds $ShotMs; Remove-Item $fl
     }
     if ($q -and $q.MainWindowTitle -match '\| ([0-9.]+) fps') { $fps += [double]$Matches[1] }
 }

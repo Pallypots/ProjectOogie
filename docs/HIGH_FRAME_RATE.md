@@ -1,7 +1,7 @@
 # High frame rate: findings and plan (2026-11-01)
 
-Status (2026-11-08): "0.3.0 High Frame Rate test 3" on the branch high-frame-rate, for the owner to try
-on the 165 Hz desktop. Test 2 still flickered above 60 there (see Test 3). Goes into a main release only
+Status (2026-11-08 night): "0.3.0 High Frame Rate test 4" on the branch high-frame-rate, for the owner to try
+on the 165 Hz desktop. Test 3 slowed the game down above 60 there (see Test 4). Goes into a main release only
 after the owner confirms it.
 
 ## Why the cap cannot simply be raised
@@ -170,3 +170,53 @@ only show while things move.
   (kc0, kb0). Half-way pictures (ALPHA=0.5) looked at in chapters 1 (walk and fight), 3, 5, 7, 10, 13, 16
   and the later chapters (kl_*): no bands, streaks or see-through walls. Matching cost ~0.5 ms a flip.
 - Not verified: the owner's 165 Hz screen, 4.5x on a fast GPU, the PS2 HD pack with this build.
+
+## Test 4 (2026-11-08 night; TEST_RESULTS kv4*)
+
+Owner's test 3 report (RTX 4090, i9-13900K, 165 Hz, vsync on, PS2 HD pack, chapter 1 from Chapters; log kept as
+logs/owner/play_20261108_hfr_test3.log): slower than 60 above 60, everything flickering, black lines from Jack.
+
+- **Slowdown (Verified):** the log's [INTERP] line had game 14-21 ms a flip and 0-2 pictures in chapter 1 (game
+  40-50 fps), ~1,900 draws a frame with ~1,800 repeats of one name (laptop chapter 1: ~320). Six [STALL]s of
+  0.35-0.44 s had the render thread at sub_00232C40_enter+CCC6..CCFB; resolved by disassembling the shipped exe
+  (RVA 0x212A0-0x212FA): the 192x4 loop of `ip_cdist`, called from `ip_pick` (48 candidates of 768 numbers for
+  every repeated draw). Reproduced on the laptop in chapter 13 with OOGIE_INTERP_PICKOLD=1 (test 3's search):
+  pairing 12 ms a frame (worst 22.6), game 24 ms; test 4: 0.85 ms (worst 1-4.6), game 14 ms (laptop GPU)
+  (kv4o_c13, kv4n_c13). Now: SSE distance, draw-order candidate first, 8 candidates, a budget of 4,096
+  comparisons a frame (s_ip_pick_left; over it draw order), bounded chain walk. The run ordinals in ip_regroup
+  are sorted instead of scanned back (was up to 4,096 steps a run).
+- **Rematch stalls (Verified by stress):** in the owner's log every 120 frames ~90% of a frame's draws found
+  nothing by name (e.g. f=5160: 205 of 1929), not seen on the laptop. ip_rematch then compared every unmatched
+  copy with every unclaimed copy (quadratic). Now bounded (claimed draws leave the bucket head, 8 candidates,
+  64 steps, its own 2,048 share of the budget). OOGIE_INTERP_SCRAMBLE=120 (every 120th frame new names):
+  0 frames lost their pictures, found again by shape ~2,300 a 2 s, match worst 1.9-3.7 ms (kv4s_c13). A new log
+  line names what changed when more than 200 draws are found again by shape (cause still **Hypothesis**:
+  something in the owner's setup, PS2 HD pack or timing, changes vertex address/first index every 2 s).
+- **Unpaired draws used this frame's camera (Verified):** new draws, draws refused by the attribute check and
+  shadow runs drawn as is were drawn with this frame's constants while the rest used blended ones, so in each
+  in-between picture they sat one frame of camera motion ahead (owner's log: 20-70 a frame, laptop 2-3).
+  `ip_camera_fill`: per vertex program, the registers every matched draw shares (equal in all of them, this
+  frame and the frame before: camera, projection, lights) take the frame before's value in such a draw when it
+  holds the same value; its own object registers stay. Refused pairs now blend constants and keep their own
+  positions. a=0 test (OOGIE_INTERP_ALPHA=0, Jack running) camera fix off/on: chapter 3 worst 2,464 -> 40
+  pixels, chapter 13 worst 6,335 -> 3,471 (the rest: tower windows, a pixel-shader glow, not blended),
+  chapter 1 median 1,480 -> 1,003 (kv4c0_*, kv4c1_*). OOGIE_INTERP_CAMERA=0 turns it off.
+- **Shadow passes together:** runs with the same quads (hash of their data) decide together: all move by the
+  first one's shift or all are drawn as is (~7,400 groups a 2 s in chapter 1, kv4f_c1).
+- **Depth/stencil restored:** ip_save_targets now saves and restores each record's depth-stencil target too
+  (48 slots, textures held with AddRef while saved).
+- **Flicker check (new, Verified):** OOGIE_SHOT_LOG=1 tags each saved picture real or in-between; every
+  in-between picture must lie within the real frames either side (+-40). Chapters 1, 3, 5, 7, 10, 13, 16, 19
+  at 2x (kv4f_*, kv4g_*) and chapter 1 at 3x/165 (kv4f3x_c1): outside pixels median 0-822, worst 4,302 (a
+  cutscene camera cut), otherwise only real motion (spinning item, glowing windows). Frame Rate 30/60 (auto
+  mode), 120, 165, Unlimited, 120+vsync on a 60 Hz screen: correct rates, no stalls (kv4m*, kv4am*).
+- **Stale vertex address in the names (Verified on the laptop):** the new log line caught a draw whose vertex
+  address alternated 00007FF7 / 000E037C from frame to frame (kv4soak). The backend_gpu_vsh patch took the
+  address from the first input the program reads even when that input is switched off (size or stride 0), and
+  a switched-off input keeps a stale offset. Now the first input that really is an array (1 if none). Found
+  again by shape in chapter 1: 112-346 a 2 s -> 0 (kv4p_c1). Likely the owner's every-120-frames name changes
+  (**Hypothesis** until the owner's next log).
+- Known, small: a spinning pickup whose vertices the game rewrites each frame can go unpaired (a=0 worst 2,756
+  pixels in chapter 3 at one moment, kv4z_c3; 40 in another run): it turns one frame ahead in the in-between
+  pictures. No streaks or flicker.
+- Not verified: a 165 Hz screen, the PS2 HD pack, the owner's scene.
