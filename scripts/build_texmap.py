@@ -41,6 +41,10 @@ LZDIR = os.path.join(ROOT, "build_out", "research", "textures", "lz")
 
 # Manual review (contact sheets, by eye). (pack file name, Xbox key) pairs that are wrong.
 REJECT = {
+    # GitHub #14 (EpicBongZilla: "an error on the wire fence texture"). 020b/0207/0208.lz bg/pig/ami1.pig,
+    # the Chapter 2 wire fence: the pack's picture is the same 256x256 size and its pattern matches badly
+    # (luminance correlation 0.62, washed-out grey wire); the original fence stays.
+    ("b06deb5fdc6244a4-9669c6a4aa392333-00006214.dds", "256x256_bcedf4814e664b3f"),
     # detailed fire sprite onto a flat 16x16 orange swatch (0000.lz bg/pig/cirx27.pig), score 0.716
     ("f323f87efaa13fa0-1322ec8cb8103e1-00005993.dds", "16x16_540cae485a5127bb"),
     # yellow PS2 glows (10 different files) onto the white Xbox spot glow (02xx.lz bg/pig/spot.pig);

@@ -17,7 +17,7 @@ static char s_path[MAX_PATH];
 /* Written when settings.ini is missing. Every value here is the built-in
  * default, so deleting the file (or a line) never changes behaviour. */
 static const char s_default_ini[] =
-"; Project Oogie settings. Press F1 in the game (or Back+Start on a pad) to\n"
+"; Project Oogie settings. Press F1 or F10 in the game (or Back+Start on a pad) to\n"
 "; change them in the settings menu; this file is where they are kept.\n"
 "; It can also be edited with Notepad while the game is closed. Delete it to\n"
 "; get the defaults back (it is rewritten on the next start).\n"
@@ -158,6 +158,8 @@ static const char s_default_ini[] =
 "DpadDown = G\n"
 "DpadLeft = F\n"
 "DpadRight = H\n"
+"; The key that opens the settings menu (F1 and F10 always work too).\n"
+"SettingsMenu = F1\n"
 "LeftStickUp = W, Numpad8\n"
 "LeftStickDown = S, Numpad2\n"
 "LeftStickLeft = A, Numpad4\n"

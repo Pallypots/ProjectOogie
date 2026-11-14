@@ -255,6 +255,8 @@ static Item s_items[] = {
     { P_CONTROLS, "Connected Controllers", NULL, IT_INFO },
 
 #define KB(lbl, key, def) { P_KEYBOARD, lbl, "Press A or Enter, then the new key. Delete clears, Y resets.", IT_KEY, NULL, NULL, 0, 0, "Keyboard", key, def }
+    { P_KEYBOARD, "Open This Menu", "The key that opens this menu (F1 and F10 always work too, and Back+Start on a pad). Press A or Enter, then the new key.",
+      IT_KEY, NULL, NULL, 0, 0, "Keyboard", "SettingsMenu", "F1" },
     KB("A (jump, confirm)", "A", "Down, Z"),
     KB("B (back)", "B", "Right, X"),
     KB("X (Soul Robber)", "X", "Left, C"),
@@ -723,6 +725,7 @@ int pc_menu_update_state(void)
     return 0;
 }
 
+int oogie_menu_vk(void);   /* d3d11_backend.c: [Keyboard] SettingsMenu */
 int pc_menu_key(int vk, int down)
 {
     if ((unsigned)vk < 256) {
@@ -731,7 +734,7 @@ int pc_menu_key(int vk, int down)
         else s_keys_down[vk] = 0;
     }
     if (!s_open) {
-        if (down && vk == VK_F1) { open_menu(); return 1; }
+        if (down && (vk == VK_F1 || vk == VK_F10 || vk == oogie_menu_vk())) { open_menu(); return 1; }
         return 0;
     }
     if (!down) return 1;
@@ -741,7 +744,7 @@ int pc_menu_key(int vk, int down)
         const char *n;
         if (vk == VK_ESCAPE) { s_capture = 0; return 1; }
         if (vk == VK_DELETE) { pc_settings_set(it->sec, it->key, "none"); s_capture = 0; oogie_keymap_reload(); return 1; }
-        if (vk == VK_F1 || vk == VK_F11) return 1;
+        if (vk == VK_F11 || (vk == VK_F1 && strcmp(it->key, "SettingsMenu"))) return 1;
         n = vk_name(vk, b);
         if (n) { pc_settings_set(it->sec, it->key, n); oogie_keymap_reload(); s_capture = 0; }
         return 1;
@@ -751,7 +754,7 @@ int pc_menu_key(int vk, int down)
         return 1;
     }
     switch (vk) {
-    case VK_F1: case VK_ESCAPE: case VK_BACK: InterlockedExchange(&s_open, 0); break;
+    case VK_F1: case VK_F10: case VK_ESCAPE: case VK_BACK: InterlockedExchange(&s_open, 0); break;
     case VK_UP: case 'W': move_sel(-1); break;
     case VK_DOWN: case 'S': move_sel(1); break;
     case VK_LEFT: case 'A': { Item *it = cur_item(); if (it) change(it, -1); } break;
@@ -1484,6 +1487,20 @@ static void draw_menu(UINT W, UINT H)
     }
 }
 
+/* A short note on screen for a few seconds (GitHub #16, #17: the game says
+ * when it runs in slow motion). Two lines at most, separated by a newline. */
+static char s_notice[2][200];
+static volatile DWORD s_notice_until;
+void pc_menu_notice(const char *msg, int seconds)
+{
+    const char *nl = strchr(msg, '\n');
+    size_t n = nl ? (size_t)(nl - msg) : strlen(msg);
+    if (n >= sizeof s_notice[0]) n = sizeof s_notice[0] - 1;
+    memcpy(s_notice[0], msg, n); s_notice[0][n] = 0;
+    snprintf(s_notice[1], sizeof s_notice[1], "%s", nl ? nl + 1 : "");
+    s_notice_until = GetTickCount() + (DWORD)seconds * 1000u;
+}
+
 void pc_menu_render(void *devp, void *ctxp, void *rtvp, UINT W, UINT H, float fps)
 {
     ID3D11Device *dev = (ID3D11Device *)devp;
@@ -1495,7 +1512,8 @@ void pc_menu_render(void *devp, void *ctxp, void *rtvp, UINT W, UINT H, float fp
     float inv[4];
     ID3D11ShaderResourceView *srv;
 
-    if (!s_open && !g_pc.show_fps)
+    int notice = s_notice_until && (int)(s_notice_until - GetTickCount()) > 0;
+    if (!s_open && !g_pc.show_fps && !notice)
         return;
     if (!s_gfx_ok) {
         if (s_gfx_failed) return;
@@ -1521,6 +1539,12 @@ void pc_menu_render(void *devp, void *ctxp, void *rtvp, UINT W, UINT H, float fp
             float px = H > 1000 ? 40.0f : 28.0f;
             text(14, 8, px, b, C_GOLD_T, C_GOLD_B, 0);
         }
+    }
+    if (notice && !s_open) {
+        float px = H > 1000 ? 36.0f : 26.0f, y = (float)H * 0.66f;   /* above the subtitles */
+        s_ox = 0; s_oy = 0; s_sc = 1;
+        text_fit(20, y, px, (float)W - 40.0f, s_notice[0], C_GOLD_T, C_GOLD_B);
+        if (s_notice[1][0]) text_fit(20, y + px * 1.3f, px, (float)W - 40.0f, s_notice[1], C_GOLD_T, C_GOLD_B);
     }
     if (s_open)
         draw_menu(W, H);

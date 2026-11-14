@@ -4391,6 +4391,7 @@ void sub_000CF950_enter(void)
  * of the health that is left. Seven enemy routines call it. A first try
  * raised the damage in the hit record (sub_000C5D20): the hits arrived as
  * 9999 but the enemies took several hits all the same (os4, os10). */
+void oogie_rush_hit(void);   /* Boss Rush health pumpkins, end of this file */
 void sub_001131E0_enter(void)
 {
     static int logn = -1;
@@ -4399,6 +4400,7 @@ void sub_001131E0_enter(void)
     if (comp < 0x10000) return;
     memcpy(&dmg, (const void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), 4);
     memcpy(&hp, (const void *)((uintptr_t)(comp + 0x274) + g_xbox_mem_offset), 4);
+    if (dmg > 0 && hp > 0) oogie_rush_hit();
     if (logn < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); logn = (e && *e == '1') ? 40 : 0; }
     if (logn > 0) {   /* test: OOGIE_CHEAT_LOG=1 logs the first 40 */
         logn--;
@@ -4483,8 +4485,11 @@ void sub_000F3BF0_enter(void)
     float d, d0;
     int site = 0;
     if (logn < 0) { const char *e = getenv("OOGIE_CHEAT_LOG"); logn = (e && *e == '1') ? 80 : 0; }
-    if (!g_pc.cheat_oneshot && !logn) return;
     for (k = 0; k < sizeof jack_sites / sizeof jack_sites[0]; k++) if (ret == jack_sites[k]) site = 1;
+    /* Boss Rush: one of Jack's hits on a boss (the small spider's damage
+     * passed on to the Mega Spider is the same hit counted once). */
+    if (site && ret != 0x00109013u) oogie_rush_hit();
+    if (!g_pc.cheat_oneshot && !logn) return;
     memcpy(&d, (const void *)((uintptr_t)(g_esp + 8) + g_xbox_mem_offset), 4);
     d0 = d;
     if (g_pc.cheat_oneshot && site && t >= 0x10000 && d > 0 && d < 99999.0f
@@ -4741,32 +4746,170 @@ static void rush_test_die(void)
     fprintf(stderr, "[RUSH] test: damage to %08X\n", a[0]);
     guest_stdcalln(sub_000F3BF0, 0x001064F7u, 3, a);
 }
+/* Boss Rush health pumpkins (GitHub #13, Bzshizzle: "no health fills ...
+ * the low health total makes it super hard"). Boss arenas have no pick-ups,
+ * so every RUSH_HITS hits Jack lands on a boss or its minions earn a big
+ * pumpkin, kept (at most RUSH_BANK) until he is hurt. It is given by the
+ * game's own pick-up routine sub_000A9A30(item) (Verified, text.asm
+ * 0xA9A30-0xA9AB5, reached through the item table at 0x2E4258): +2 health,
+ * +8 when the item's flags have 0x08000000, its sound (sub_00023D80), Jack's
+ * glow (sub_000D0030 0x50) and the sparkle at Jack (sub_000494D0 0x18); it
+ * reads and writes only the flags word of the item, here a word on the guest
+ * stack. */
+#define RUSH_HITS 8
+#define RUSH_BANK 2
+static volatile LONG s_rush_hits, s_rush_pumpkins;
+static DWORD s_rush_last_heal;
+extern void sub_000A9A30(void);
+void oogie_rush_hit(void)
+{
+    if (s_mode != 2 || s_rush_clearing) return;
+    if (InterlockedIncrement(&s_rush_hits) >= RUSH_HITS) {
+        InterlockedExchange(&s_rush_hits, 0);
+        if (s_rush_pumpkins < RUSH_BANK) InterlockedIncrement(&s_rush_pumpkins);
+    }
+}
+static void rush_give_pumpkin(void)
+{
+    uint32_t hp, max, esp0, rec;
+    DWORD now = GetTickCount();
+    {   /* OOGIE_TEST_RUSH_HEAL=S (test): S s into each fight, health 5 and one pumpkin earned */
+        static int th = -1;
+        static int done_i = -1;
+        if (th < 0) { const char *e = getenv("OOGIE_TEST_RUSH_HEAL"); th = e && *e ? atoi(e) : 0; }
+        if (th > 0 && done_i != s_rush_i && s_rush_t0 && now - s_rush_t0 >= (DWORD)th * 1000u
+            && OOGIE_MEM32(0x420C28) > 5) {
+            done_i = s_rush_i;
+            fprintf(stderr, "[RUSH] test: health %u of %u set to 5, one pumpkin earned\n", OOGIE_MEM32(0x420C28), OOGIE_MEM32(0x420C24));
+            OOGIE_MEM32(0x420C28) = 5;
+            for (rec = 0; rec < RUSH_HITS; rec++) oogie_rush_hit();
+        }
+    }
+    hp = OOGIE_MEM32(0x420C28); max = OOGIE_MEM32(0x420C24);
+    if (s_rush_pumpkins <= 0 || s_rush_clearing || hp == 0 || hp >= max || max > 100
+        || OOGIE_MEM32(0x420E98) < 0x10000 || now - s_rush_last_heal < 1500) return;
+    s_rush_last_heal = now;
+    InterlockedDecrement(&s_rush_pumpkins);
+    esp0 = g_esp;
+    g_esp -= 16;
+    rec = g_esp;
+    OOGIE_MEM32(rec) = 0x08000000u;          /* the big pumpkin */
+    guest_stdcalln(sub_000A9A30, 0x000A994Eu, 1, &rec);
+    g_esp = esp0;
+    fprintf(stderr, "[RUSH] health pumpkin: %u -> %u of %u (%ld kept)\n", hp, OOGIE_MEM32(0x420C28), max, (long)s_rush_pumpkins);
+    fflush(stderr);
+}
+
+/* Boss Rush results (GitHub #13, owner: a results screen for the whole run,
+ * as other games' boss rushes end with one). Each boss keeps its own results
+ * screen. The game grades a chapter in sub_00040AB0 (eax = the grading block
+ * 0x413180: +0 time (float s), +4 best combo, +8 damage taken, +0xC "!"
+ * points, grades +0x10..+0x13 (0-4 each), rank +0x14 from their sum: 16+ 4,
+ * 12+ 3, 8+ 2, 4+ 1, else 0; ecx = the chapter's limits) when its results
+ * screen starts (sub_0004655D, 0x46950). Verified from text.asm 0x40AB0-0x40C02.
+ * After the last boss's grading the block becomes the run: total time, best
+ * combo, total damage and points (the game's 999 caps), each grade the
+ * average of the bosses' own grades (rounded), and the rank by the game's
+ * own rule. So the closing screen shows the whole Boss Rush. */
+static float s_rush_time[RUSH_N];
+static uint32_t s_rush_combo[RUSH_N], s_rush_dmg[RUSH_N], s_rush_pts[RUSH_N];
+static uint8_t s_rush_grade[RUSH_N][4];
+static int s_rush_done[RUSH_N];
+extern void sub_00040AB0_gen(void);
+void sub_00040AB0(void)
+{
+    uint32_t blk = g_eax;
+    int i = s_rush_i, k, n = 0, sum, g[4] = { 0, 0, 0, 0 };
+    float t = 0;
+    uint32_t combo = 0, dmg = 0, pts = 0;
+    if (s_mode == 2) { fprintf(stderr, "[RUSH] grading block %08X limits %08X\n", blk, g_ecx); fflush(stderr); }
+    sub_00040AB0_gen();
+    if (s_mode != 2 || blk != 0x413180u || i < 0 || i >= RUSH_N) return;
+    memcpy(&s_rush_time[i], (const void *)((uintptr_t)blk + g_xbox_mem_offset), 4);
+    s_rush_combo[i] = OOGIE_MEM32(blk + 4);
+    s_rush_dmg[i] = OOGIE_MEM32(blk + 8);
+    s_rush_pts[i] = OOGIE_MEM32(blk + 12);
+    for (k = 0; k < 4; k++) s_rush_grade[i][k] = OOGIE_MEM8(blk + 0x10 + (uint32_t)k);
+    s_rush_done[i] = 1;
+    fprintf(stderr, "[RUSH] boss %d results: %.1f s, combo %u, damage %u, points %u, grades %u %u %u %u, rank %u\n",
+            i + 1, s_rush_time[i], s_rush_combo[i], s_rush_dmg[i], s_rush_pts[i],
+            s_rush_grade[i][0], s_rush_grade[i][1], s_rush_grade[i][2], s_rush_grade[i][3], OOGIE_MEM32(blk + 0x14));
+    if (i != RUSH_N - 1) { fflush(stderr); return; }
+    for (k = 0; k < RUSH_N; k++) {
+        int j;
+        if (!s_rush_done[k]) continue;
+        n++;
+        t += s_rush_time[k];
+        if (s_rush_combo[k] > combo) combo = s_rush_combo[k];
+        dmg += s_rush_dmg[k];
+        pts += s_rush_pts[k];
+        for (j = 0; j < 4; j++) g[j] += s_rush_grade[k][j];
+    }
+    if (!n) return;
+    memcpy((void *)((uintptr_t)blk + g_xbox_mem_offset), &t, 4);
+    OOGIE_MEM32(blk + 4) = combo > 999 ? 999 : combo;
+    OOGIE_MEM32(blk + 8) = dmg > 999 ? 999 : dmg;
+    OOGIE_MEM32(blk + 12) = pts > 999 ? 999 : pts;
+    for (sum = 0, k = 0; k < 4; k++) {
+        int a = (g[k] * 2 + n) / (2 * n);
+        OOGIE_MEM8(blk + 0x10 + (uint32_t)k) = (uint8_t)a;
+        sum += a;
+    }
+    OOGIE_MEM32(blk + 0x14) = sum >= 16 ? 4u : sum >= 12 ? 3u : sum >= 8 ? 2u : sum >= 4 ? 1u : 0u;
+    fprintf(stderr, "[RUSH] whole run (%d bosses): %.1f s, best combo %u, damage %u, points %u, grades %u %u %u %u, rank %u\n",
+            n, t, OOGIE_MEM32(blk + 4), OOGIE_MEM32(blk + 8), OOGIE_MEM32(blk + 12),
+            OOGIE_MEM8(blk + 0x10), OOGIE_MEM8(blk + 0x11), OOGIE_MEM8(blk + 0x12), OOGIE_MEM8(blk + 0x13), OOGIE_MEM32(blk + 0x14));
+    fflush(stderr);
+}
+
 void oogie_modes_frame(void)
 {
     static int test = -1;
     uint32_t a[2];
     if (s_mode != 2) return;
     rush_test_die();
+    rush_give_pumpkin();
     if (test < 0) { const char *e = getenv("OOGIE_TEST_RUSH_CLEAR"); test = e && *e ? atoi(e) : 0; }
-    if (test > 0 && !s_rush_clearing && s_rush_i + 1 < RUSH_N && s_rush_t0 && GetTickCount() - s_rush_t0 >= (DWORD)test * 1000u)
-        InterlockedExchange(&s_rush_clear, 1);
+    {   /* OOGIE_TEST_RUSH_CLEAR_LAST=1 (test): the test clear also ends the last fight (to see the run's results) */
+        static int last = -1;
+        if (last < 0) { const char *e = getenv("OOGIE_TEST_RUSH_CLEAR_LAST"); last = e && *e == '1'; }
+        if (test > 0 && !s_rush_clearing && (s_rush_i + 1 < RUSH_N || last) && s_rush_t0 && GetTickCount() - s_rush_t0 >= (DWORD)test * 1000u)
+            InterlockedExchange(&s_rush_clear, 1);
+    }
     if (s_rush_after_closing && GetTickCount() - s_rush_closing_t > 60000) {
         s_rush_after_closing = 0;
         InterlockedExchange(&s_rush_clear, 1);
+    }
+    if (s_rush_clearing) {   /* the results screen's state, once a second (0.3.1 bring-up) */
+        static uint32_t ls = 0xFFFFFFFFu;
+        if (OOGIE_MEM32(0x3DF9B4) != ls) {
+            ls = OOGIE_MEM32(0x3DF9B4);
+            fprintf(stderr, "[RUSH] results state %u mode %u kind %u chapter %u\n", OOGIE_MEM32(0x3DF9B4),
+                    OOGIE_MEM32(0x3DF9B8), OOGIE_MEM32(0x3DFA60), OOGIE_MEM32(0x3DF9BC));
+        }
     }
     if (!InterlockedExchange(&s_rush_clear, 0) || s_rush_clearing) return;
     s_rush_clearing = 1;
     fprintf(stderr, "[RUSH] boss %d cleared: results\n", s_rush_i + 1);
     fflush(stderr);
     /* as sub_0019D830, but with the results screen (mode 0) */
+    /* 0.3.1: and graded. The results screen grades the chapter only when
+     * [0x3DFA60] is 0 (0x4691A); the game's chapter-end command sets it with
+     * sub_000408D0 (0 for a clear with results, 1 without, sub_000DA6D0). It
+     * was left as it was, so 0.3.0 showed no grades (Verified r31c/r31e). */
+    OOGIE_MEM32(0x3DFA60) = 0;
     OOGIE_MEM32(0x402FE4) = 8;
     OOGIE_MEM32(0x402FE8) = 1;   /* waits for the screen; the results screen then asks for the next chapter (0x4488D) */
+    /* 0.3.1: exactly the game's own clear with results, sub_0019D7F0
+     * (chapter, mode 1, sub_0019E810(0)). 0.3.0 used mode 0 with
+     * sub_0019E810(2): the results task went 0 -> 101 -> 10000 and never
+     * graded (r31g [RUSH] results state lines). */
     a[0] = OOGIE_MEM32(0x413164);
-    guest_stdcalln(sub_000408B0, 0x0019D84Eu, 1, a);
+    guest_stdcalln(sub_000408B0, 0x0019D80Eu, 1, a);
+    a[0] = 1;
+    guest_stdcalln(sub_000408C0, 0x0019D815u, 1, a);
     a[0] = 0;
-    guest_stdcalln(sub_000408C0, 0x0019D855u, 1, a);
-    a[0] = 2;
-    guest_stdcalln(sub_0019E810, 0x0019D865u, 1, a);
+    guest_stdcalln(sub_0019E810, 0x0019D825u, 1, a);
 }
 
 /* Called at the start of sub_00040950(chapter). */
@@ -4778,13 +4921,14 @@ void oogie_modes_chapter_start(void)
     /* The next boss: after the game's own chapter clear (0x19DD25), or after
      * our clear, which comes back asking for the same chapter (0x19DCD8). A
      * Continue after a death stays on this boss. */
-    if ((ret == 0x0019DD25u || (ret == 0x0019DCD8u && s_rush_clearing)) && s_rush_i + 1 < RUSH_N) s_rush_i++;
+    if ((ret == 0x0019DD25u || s_rush_clearing) && s_rush_i + 1 < RUSH_N) s_rush_i++;
     b = &s_rush[s_rush_i];
     InterlockedExchange(&s_rush_clear, 0);
     s_rush_after_closing = 0;
     s_rush_clearing = 0;
     s_rush_actor = 0;
     s_rush_t0 = GetTickCount();
+    s_rush_hits = s_rush_pumpkins = 0;   /* each boss starts at full health */
     rush_set_row(b);
     OOGIE_MEM32(g_esp + 4) = (uint32_t)b->chapter;
     fprintf(stderr, "[RUSH] boss %d of %d: %s, chapter %d (asked for %u, from 0x%08X)\n",
@@ -4819,6 +4963,9 @@ void sub_000409E0(void)
         modes_stat(4, 2);               /* the game's own upgrade cheats, 0x1AF50 and 0x1AF70 */
         for (k = 8; k <= 11; k++) modes_stat(k, 2);
         guest_stdcalln(sub_00040A50, 0x000409E0u, 1, &ch);   /* the chapter's key items */
+        /* GitHub #13: the whole health bar. 30 is the game's own cap on the
+         * maximum (sub_000D1E10, stat 0: 0x1E); a new game has 10. */
+        modes_stat(0, 30);
         /* full health, as Chapter Select does (0x43C43) */
         a[0] = 0x41FEC0u; a[1] = 0;
         hp = guest_stdcalln(sub_000CF790, 0x000409E0u, 2, a);
@@ -4842,6 +4989,8 @@ static void modes_apply(int m)
         const char *e = getenv("OOGIE_TEST_RUSH_FROM");
         s_rush_i = e && *e ? atoi(e) : 0;
         if (s_rush_i < 0 || s_rush_i >= RUSH_N) s_rush_i = 0;
+        memset(s_rush_done, 0, sizeof s_rush_done);
+        s_rush_hits = s_rush_pumpkins = 0;
         OOGIE_MEM32(0x3E750C) = 1;
     }
 }

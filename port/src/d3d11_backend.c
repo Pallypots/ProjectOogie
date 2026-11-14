@@ -264,8 +264,23 @@ static void keys_release_all(void);
 
 /* The settings menu changed [Keyboard]: rebuild the map at the next key and
  * let go of everything held under the old one. */
+/* GitHub #15 (Morilix07: F1 is the mute key on some keyboards): the key
+ * that opens the settings menu, [Keyboard] SettingsMenu (default F1). F1 and
+ * F10 open it as well, and Back+Start on a pad. */
+static int s_menu_vk = -1;
+int oogie_menu_vk(void)
+{
+    if (s_menu_vk < 0) {
+        const char *v = pc_settings_get("Keyboard", "SettingsMenu");
+        s_menu_vk = v && *v ? key_by_name(v) : 0;
+        if (!s_menu_vk) s_menu_vk = VK_F1;
+    }
+    return s_menu_vk;
+}
+
 void oogie_keymap_reload(void)
 {
+    s_menu_vk = -1;
     s_arrow_face = -1;
     keys_release_all();
 }
@@ -440,13 +455,13 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         if (pc_menu_key((int)w, 1)) {
             keys_release_all();                   /* the game sees nothing held */
-            return m == WM_SYSKEYDOWN ? DefWindowProcA(h, m, w, l) : 0;
+            return m == WM_SYSKEYDOWN && w != VK_F10 ? DefWindowProcA(h, m, w, l) : 0;   /* F10 alone would start Windows' menu mode */
         }
         key_event((int)w, 1);
         return m == WM_SYSKEYDOWN ? DefWindowProcA(h, m, w, l) : 0;
     case WM_KEYUP: case WM_SYSKEYUP:
         if (pc_menu_key((int)w, 0))
-            return m == WM_SYSKEYUP ? DefWindowProcA(h, m, w, l) : 0;
+            return m == WM_SYSKEYUP && w != VK_F10 ? DefWindowProcA(h, m, w, l) : 0;
         key_event((int)w, 0);
         return m == WM_SYSKEYUP ? DefWindowProcA(h, m, w, l) : 0;
     case WM_ACTIVATE:
@@ -4363,11 +4378,52 @@ static int be_draw_vsh(const Nv2aSurface *s, const Nv2aRenderState *rs,
              * moved and the digit did not (owner 2026-10-24, combo2_41:
              * "COMI5"). Centre in the top 35% and the outer 35% across, at
              * most 240 px wide: both move together. */
-            {
+            /* GitHub #13 (Bzshizzle, 0.3.0 screenshots): a boss's health
+             * bar is a tall gauge at the right (x about 565-610, y 115-310)
+             * with a gold top piece. Only the top piece had its centre in
+             * the band, so it went to the screen edge and the bar stayed:
+             * the fill seemed to stick out of its frame. A tall, narrow
+             * piece in an outer column marks that column (this frame or the
+             * last), and every piece in it moves with the gauge. */
+            if (g_pc.hud_edges) {
+                static uint32_t col_frame;
+                static float col_cur[4][2], col_prev[4][2];
+                static int ncur, nprev;
                 float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
-                if (g_pc.hud_edges && cy <= 168.0f && x1 - x0 <= 240.0f) {
+                int k, in_col = 0;
+                if (col_frame != s_frame) {
+                    memcpy(col_prev, col_cur, sizeof col_cur);
+                    nprev = ncur; ncur = 0; col_frame = s_frame;
+                }
+                if (y1 - y0 >= 100.0f && x1 - x0 <= 64.0f && (cx <= 224.0f || cx >= 416.0f) && y0 <= 168.0f && y1 <= 360.0f) {
+                    for (k = 0; k < ncur; k++)
+                        if (x0 < col_cur[k][1] && x1 > col_cur[k][0]) break;
+                    if (k == ncur && ncur < 4) { col_cur[ncur][0] = x0 - 24.0f; col_cur[ncur][1] = x1 + 24.0f; ncur++; }
+                }
+                if (cy <= 360.0f && (cx <= 224.0f || cx >= 416.0f)) {
+                    for (k = 0; k < ncur && !in_col; k++) in_col = x0 < col_cur[k][1] && x1 > col_cur[k][0];
+                    for (k = 0; k < nprev && !in_col; k++) in_col = x0 < col_prev[k][1] && x1 > col_prev[k][0];
+                }
+                if (in_col) {
                     if (cx <= 224.0f) s_vconsts.fp[2] = -0.5f;
                     else if (cx >= 416.0f) s_vconsts.fp[2] = 0.5f;
+                } else if (cy <= 168.0f && x1 - x0 <= 240.0f) {
+                    /* 0.3.1: a piece that starts in a corner moves with it as
+                     * long as its centre is on that half. With Boss Rush's full
+                     * health bar (15 pumpkins, x 31 to about 315) the last
+                     * pumpkins had their centres past 224 and stayed behind
+                     * (r31i window shots). */
+                    static uint32_t row_frame;
+                    static float row_x1, row_y0, row_y1;
+                    if (row_frame != s_frame) { row_frame = s_frame; row_x1 = -1.0f; }
+                    if (cx <= 224.0f || (x0 <= 224.0f && cx < 320.0f)
+                        || (cx < 400.0f && x0 <= row_x1 + 24.0f && y0 < row_y1 && y1 > row_y0)) {
+                        /* the row goes on: the big last pumpkin starts at x 260 or so */
+                        s_vconsts.fp[2] = -0.5f;
+                        if (row_x1 < 0.0f) { row_y0 = y0; row_y1 = y1; }
+                        else { if (y0 < row_y0) row_y0 = y0; if (y1 > row_y1) row_y1 = y1; }
+                        if (x1 > row_x1) row_x1 = x1;
+                    } else if (cx >= 416.0f || (x1 >= 416.0f && cx > 320.0f)) s_vconsts.fp[2] = 0.5f;
                 }
             }
         }
@@ -4622,6 +4678,38 @@ static void choose_sync(void)
 }
 
 static float s_fps_shown;
+/* GitHub #16 (5 fps in play, 45 in menus) and #17 (Casino Oogie slow on a
+ * Steam Deck): the game's logic is tied to the frame rate, so a slow frame
+ * rate is slow motion, and players did not know why. After 10 s well under
+ * full speed (not in the settings menu) the game says so once a session,
+ * with what to try, and the log names the likely cause. */
+void pc_menu_notice(const char *msg, int seconds);
+extern float g_oogie_worst_ms;
+static void slow_motion_check(DWORD now)
+{
+    static DWORD since, told;
+    static int logged;
+    float target = (g_pc.fps_cap > 0 && g_pc.fps_cap < 60) ? (float)g_pc.fps_cap : 60.0f;
+    /* 3D frames only (s_fl_disp: this frame's draws): films run at 30 */
+    if (pc_menu_is_open() || s_fl_disp < 40 || s_fps_shown >= target * 0.8f || s_fps_shown < 0.5f) { since = 0; return; }
+    if (!since) { since = now; return; }
+    if (now - since < 10000) return;
+    since = 0;
+    if (logged < 5) {
+        logged++;
+        fprintf(stderr, "[PERF] slow motion: %.0f fps for 10 s (full speed is %.0f). Renderer %s, render setting %d, "
+                "slowest frame %.0f ms\n", s_fps_shown, target, s_is_warp ? "WARP (software: no usable graphics driver)" : "hardware",
+                g_pc.render_scale, g_oogie_worst_ms);
+    }
+    if (told) return;
+    told = now;
+    if (s_is_warp)
+        pc_menu_notice("The game is running slowly: no graphics driver is in use (Windows' software renderer).\n"
+                       "Install or update the driver for your graphics card, then start the game again.", 20);
+    else
+        pc_menu_notice("The game is running slowly, so it plays in slow motion.\n"
+                       "Try F1 > Graphics: a lower Render Resolution (480p) or Quality Preset Low.", 15);
+}
 float g_oogie_worst_ms;          /* slowest frame in the last 2 s, for the counter */
 static double s_worst_cur;
 static int s_hitch_skip;         /* the flip after the menu closes: not a hitch */
@@ -5192,7 +5280,10 @@ static void be_flip(void)
         static DWORD t0; static uint32_t f0;
         DWORD now = GetTickCount();
         if (!t0) { t0 = now; f0 = s_frame; }
-        if (now - t0 >= 500) { s_fps_shown = (float)(s_frame - f0) * 1000.0f / (float)(now - t0); t0 = now; f0 = s_frame; }
+        if (now - t0 >= 500) {
+            s_fps_shown = (float)(s_frame - f0) * 1000.0f / (float)(now - t0); t0 = now; f0 = s_frame;
+            slow_motion_check(now);
+        }
     }
     {
         /* OOGIE_FRAME_LOG=1: one line per presented frame -- draws, draws into

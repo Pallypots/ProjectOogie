@@ -403,3 +403,12 @@ See docs/IMPROVEMENT_PLAN.md.
 - The owner asked for a Chapter Select choice and a Boss Rush. A first version used the F1 style overlay and an F1 Extras page; the owner rejected it, it must be part of the game's own menu. Both were removed.
 - Now a real page of the title menu after the difficulty: STORY, CHAPTERS, BOSS RUSH (KNOWN_ISSUES #101). Nothing committed. Open: the owner's own try, real wins in the five untested fights, the unused fourth main menu row ("INFORMATION") if an Extras entry is wanted.
 - 0.3.0 released 2026-11-07 on the owner's word, with the announcement on the release page (Discussions are off) and a reply on #13.
+
+## 2026-11-14: 0.3.1 (every open GitHub issue, #13-#17)
+- Branch release-0.3.1 from main (the high frame rate work stays on its branch). Plan: docs/PLAN_0.3.1.md; notes: docs/RELEASE_NOTES_0.3.1.md.
+- #13 Boss Rush: maximum health 30 (the game's cap), health pumpkins every 8 hits through the game's pick-up routine, results graded after every boss (0.3.0 skipped the grading, KNOWN_ISSUES #104) and the whole run on the last results screen; boss health bar and pumpkin row kept whole with HUD at Screen Edges (#102-#104).
+- #14: 2024 HD pack checked file by file (already supported since 0.2.7); the wire fence row removed (#107).
+- #15: F10 and a choosable key open the settings menu (#105).
+- #16/#17: slow-motion notice and [PERF] log line; Casino Oogie fight measured at about 6,600 draws a frame, GPU executor CPU-bound (#106). Next performance task: merge draws / constant ring.
+- Verified runs r31*, TEST_RESULTS.md.
+

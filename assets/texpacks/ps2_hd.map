@@ -4,7 +4,7 @@
 #  key   = port texture key of the Xbox texture (d3d11_backend.c tex_content_hash), W x H of the Xbox texture
 #  flags = alpha2 (PS2 alpha 0..128: double it), style=ps (shows PlayStation glyphs), style=modern (button pack),
 #          many=N (N different PS2 textures matched this key; best kept), ok|check, score=<match score 0..1>
-# rows 843 (ok 443, check 400; 4 removed and 2 alpha flags fixed after the audit_texmap.py review, KNOWN_ISSUES #98)
+# rows 842 (ok 442, check 400; 4 removed and 2 alpha flags fixed after the audit_texmap.py review, KNOWN_ISSUES #98; the Chapter 2 wire fence removed, GitHub #14)
 1024x1024_5a35a2591fd92326 43e6f93594317447-ae39b7d7cc6b8081-00006a93.dds alpha2 check score=0.801
 128x128_000eef3bd7fa06fd af4d3634bfc71dcb-df949d5cf3d20106-00005dd3.dds alpha2 check score=0.795
 128x128_0300cd9cf923b534 b03625abd62ade1c-8f95653539c6cdb1-00005dd3.dds alpha2 check score=0.788
@@ -507,7 +507,6 @@
 256x256_bb9df184b818a0e0 fa08984856052db7-85d5c02b16802def-00006213.dds alpha2 check score=0.775
 256x256_bbe841c7d7dc5003 3d5080238c496dff-3f3469c6767f462d-00006213.dds alpha2 ok score=0.985
 256x256_bce9e8c3a8db60a0 bcb700fec62b3e69-eab684a15158c453-00006213.dds alpha2 ok score=0.987
-256x256_bcedf4814e664b3f b06deb5fdc6244a4-9669c6a4aa392333-00006214.dds alpha2 ok score=0.990
 256x256_bfb1228d8ce0f4d8 19c7324fb8314944-7faa76087a10d4e5-00006214.dds alpha2 ok score=0.969
 256x256_c03ec3eedc2f89e7 72514cba57b014cb-dc69fa6dc3cf84a5-00006213.dds alpha2 check score=0.801
 256x256_c0fb45a923fbaeb9 beb83120c733dba1-368d128950ce236c-00006214.dds alpha2 check score=0.798

@@ -62,10 +62,10 @@ The translation is done with [XboxRecomp](https://github.com/sp00nznet/xboxrecom
 After **NEW GAME** and a difficulty, the game's title menu offers:
 - **Story**: the whole game in order.
 - **Chapters**: any of the 24 chapters, from the game's own Chapter Select.
-- **Boss Rush**: every major boss in a row, through to the ending.
+- **Boss Rush**: every major boss in a row, through to the ending, with a full health bar, health pumpkins earned by landing hits, and results for each boss and the whole run.
 
 ### Quality of life
-- **In-game settings menu** (press **F1**, or Back + Start on a controller), drawn with the game's own frames, cursor and buttons. Every change applies at once and is saved.
+- **In-game settings menu** (press **F1** or **F10**, or Back + Start on a controller; the key can be changed), drawn with the game's own frames, cursor and buttons. Every change applies at once and is saved.
 - **First-start setup**: point it at your disc image; it checks it and copies the game files.
 - **Skip intro logos**, **F11** fullscreen, **F12** screenshots (PNG at full resolution); the window remembers its size and place.
 - **Save backups**: the last ten copies of your saves are kept.
@@ -88,7 +88,7 @@ See [requirements.txt](requirements.txt) for what you need. In short: 64-bit Win
 
 1. Download the release zip from the [Releases](https://github.com/Pallypots/ProjectOogie/releases) page and unzip it anywhere.
 2. Run `Project Oogie.exe`. The first time, it asks for your disc image, checks that it is the supported version, and copies the game files next to the program (about 3.5 GB, once). The disc image is only read, never changed.
-3. Press **F1** for the settings menu.
+3. Press **F1** (or **F10**) for the settings menu.
 
 Default keyboard: **WASD** move, **arrow keys** are A/B/X/Y (Down A, Right B, Left X, Up Y), **T F G H** the d-pad, **Enter** Start, **Backspace** Back. All of them can be changed in F1 > Keyboard.
 
